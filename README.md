@@ -86,6 +86,34 @@ On Windows (PowerShell):
 .venv-flood-escape\Scripts\Activate.ps1
 ```
 
+## How to Run the Experiments
+
+Use these commands from the repository root (`Flood_Escape_Project/`).
+
+macOS/Linux (activate `.venv-flood-escape`):
+
+```bash
+source .venv-flood-escape/bin/activate
+```
+
+Windows PowerShell (activate `.venv-flood-escape`):
+
+```powershell
+.venv-flood-escape\Scripts\Activate.ps1
+```
+
+Run full training for all algorithms:
+
+```bash
+python -m experiments.run_experiments --episodes 5000
+```
+
+Generated plot artifacts are written to:
+
+```text
+results/plots/
+```
+
 ## Run
 
 Run the scaffold entry point:
