@@ -1,0 +1,63 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+.venv-flood-escape/
+venv/
+ENV/
+.python-version
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.hypothesis/
+.tox/
+.nox/
+.ipynb_checkpoints/
+
+# Coverage artifacts
+.coverage
+.coverage.*
+htmlcov/
+
+# IDE/editor settings
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Data and model artifacts
+data/
+checkpoints/
+models/
+runs/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Generated results
+results/plots/*
+!results/plots/.gitkeep
+results/tables/*
+!results/tables/.gitkeep
+
+# Local environment files
+.env
+.env.*

@@ -1,0 +1,14 @@
+# Flood Escape Project dependencies (strictly pinned).
+# Setup:
+#   python3 -m venv .venv-flood-escape
+#   source .venv-flood-escape/bin/activate
+#   python -m pip install --upgrade pip
+#   pip install -r requirements.txt
+
+gymnasium==1.2.3
+numpy==2.4.4
+matplotlib==3.10.8
+seaborn==0.13.2
+tqdm==4.67.3
+ruff==0.15.9
+pytest==9.0.2
