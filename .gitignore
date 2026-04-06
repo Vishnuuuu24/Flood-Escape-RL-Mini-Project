@@ -7,8 +7,11 @@ __pycache__/
 .venv/
 .venv-flood-escape/
 venv/
-ENV/
 .python-version
+
+# Keep project source package named "env" trackable.
+!env/
+!env/*.py
 
 # Distribution / packaging
 build/
