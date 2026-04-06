@@ -23,6 +23,7 @@ def test_run_all_experiments_micro_training_artifacts_and_metrics(tmp_path: Path
         "TDPrediction",
         "SARSAAgent",
         "QLearningAgent",
+        "DynaQAgent",
     }
     assert set(metrics_by_algo) == expected_algorithms
 
@@ -32,6 +33,7 @@ def test_run_all_experiments_micro_training_artifacts_and_metrics(tmp_path: Path
         "learning_tdprediction.png",
         "learning_sarsaagent.png",
         "learning_qlearningagent.png",
+        "learning_dynaqagent.png",
         "steps_comparison.png",
         "summary_metrics.png",
         "value_heatmap_montecarlocontrol.png",
@@ -41,6 +43,8 @@ def test_run_all_experiments_micro_training_artifacts_and_metrics(tmp_path: Path
         "policy_sarsaagent.png",
         "value_heatmap_qlearningagent.png",
         "policy_qlearningagent.png",
+        "value_heatmap_dynaqagent.png",
+        "policy_dynaqagent.png",
     }
 
     assert output_dir.exists()
@@ -62,3 +66,12 @@ def test_run_all_experiments_micro_training_artifacts_and_metrics(tmp_path: Path
             values = np.asarray(metrics[key], dtype=np.float64)
             assert values.shape == (5,)
             assert np.all(np.isfinite(values))
+
+    policy_report = output_dir.parent / "tables" / "policies_report.txt"
+    assert policy_report.exists()
+    assert policy_report.is_file()
+    assert policy_report.stat().st_size > 0
+
+    report_text = policy_report.read_text(encoding="utf-8")
+    for algo_name in expected_algorithms:
+        assert algo_name in report_text

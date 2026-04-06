@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 from algorithms.base_agent import StateKey, observation_to_state_key
+from algorithms.dyna_q import DynaQAgent
 from algorithms.monte_carlo import MonteCarloControl
 from algorithms.q_learning import QLearningAgent
 from algorithms.sarsa import SARSAAgent
@@ -26,6 +27,14 @@ from utils import (
 MetricValue = float | int
 Metrics = dict[str, list[MetricValue]]
 MetricsByAlgorithm = dict[str, Metrics]
+PolicyByPosition = dict[tuple[int, int], int]
+
+ACTION_LABELS = {
+    0: "U",
+    1: "D",
+    2: "L",
+    3: "R",
+}
 
 
 def _init_metrics() -> Metrics:
@@ -178,6 +187,39 @@ def _run_q_learning(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, n
     return metrics, agent.q_table
 
 
+def _run_dyna_q(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, np.ndarray]]:
+    env = FloodEscapeEnv()
+    agent = DynaQAgent(n_actions=env.action_space.n, seed=seed, planning_steps=20)
+    metrics = _init_metrics()
+
+    for episode in range(episodes):
+        obs, _ = env.reset(seed=_episode_seed(seed, 4, episode))
+        state = observation_to_state_key(obs)
+
+        done = False
+        episode_reward = 0.0
+        episode_steps = 0
+
+        while not done:
+            action = agent.select_action(state, explore=True)
+            next_obs, reward, terminated, truncated, _ = env.step(action)
+            next_state = observation_to_state_key(next_obs)
+
+            done = bool(terminated or truncated)
+            agent.update(state, action, reward, next_state, done)
+
+            episode_reward += float(reward)
+            episode_steps += 1
+            state = next_state
+
+        agent.decay_hyperparameters()
+        metrics["reward_per_episode"].append(episode_reward)
+        metrics["success_per_episode"].append(_is_success(bool(terminated), state, env.goal_position))
+        metrics["steps_per_episode"].append(episode_steps)
+
+    return metrics, agent.q_table
+
+
 def _run_td_prediction(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, float]]:
     env = FloodEscapeEnv()
     agent = TDPrediction()
@@ -218,6 +260,128 @@ def _run_td_prediction(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey
     return metrics, agent.v_table
 
 
+def _aggregate_q_by_position(
+    q_table: dict[StateKey, np.ndarray],
+    grid_size: int,
+) -> dict[tuple[int, int], np.ndarray]:
+    grouped: dict[tuple[int, int], list[np.ndarray]] = {}
+
+    for state, row in q_table.items():
+        x, y = state[0]
+        if not (0 <= x < grid_size and 0 <= y < grid_size):
+            continue
+
+        q_values = np.asarray(row, dtype=np.float64).reshape(-1)
+        if q_values.size < 4 or not np.all(np.isfinite(q_values[:4])):
+            continue
+
+        grouped.setdefault((x, y), []).append(q_values[:4])
+
+    return {
+        position: np.mean(np.vstack(rows), axis=0)
+        for position, rows in grouped.items()
+        if rows
+    }
+
+
+def _aggregate_v_by_position(
+    v_table: dict[StateKey, float],
+    grid_size: int,
+) -> dict[tuple[int, int], float]:
+    grouped: dict[tuple[int, int], list[float]] = {}
+
+    for state, value in v_table.items():
+        x, y = state[0]
+        if not (0 <= x < grid_size and 0 <= y < grid_size):
+            continue
+
+        numeric_value = float(value)
+        if not np.isfinite(numeric_value):
+            continue
+
+        grouped.setdefault((x, y), []).append(numeric_value)
+
+    return {
+        position: float(np.mean(values))
+        for position, values in grouped.items()
+        if values
+    }
+
+
+def _derive_policy_from_q_table(
+    q_table: dict[StateKey, np.ndarray],
+    grid_size: int,
+) -> PolicyByPosition:
+    aggregated_q = _aggregate_q_by_position(q_table, grid_size)
+    policy: PolicyByPosition = {}
+
+    for position, q_values in aggregated_q.items():
+        best_action = int(np.argmax(q_values))
+        policy[position] = best_action
+
+    return policy
+
+
+def _derive_policy_from_v_table(
+    v_table: dict[StateKey, float],
+    grid_size: int,
+) -> PolicyByPosition:
+    aggregated_v = _aggregate_v_by_position(v_table, grid_size)
+    policy: PolicyByPosition = {}
+
+    for x in range(grid_size):
+        for y in range(grid_size):
+            candidate_positions = {
+                0: (max(0, x - 1), y),
+                1: (min(grid_size - 1, x + 1), y),
+                2: (x, max(0, y - 1)),
+                3: (x, min(grid_size - 1, y + 1)),
+            }
+
+            candidate_values = np.array(
+                [aggregated_v.get(candidate_positions[action], float("-inf")) for action in range(4)],
+                dtype=np.float64,
+            )
+
+            if not np.isfinite(candidate_values).any():
+                continue
+
+            best_action = int(np.argmax(candidate_values))
+            policy[(x, y)] = best_action
+
+    return policy
+
+
+def _format_policy_grid(
+    algo_name: str,
+    policy: PolicyByPosition,
+    grid_size: int,
+    goal_position: tuple[int, int],
+) -> str:
+    header = "    " + " ".join(f"y{idx}" for idx in range(grid_size))
+    lines = [f"{algo_name} policy (greedy)", "Legend: U=Up D=Down L=Left R=Right G=Goal .=Unknown", header]
+
+    for x in range(grid_size):
+        row_tokens: list[str] = []
+        for y in range(grid_size):
+            position = (x, y)
+            if position == goal_position:
+                token = "G"
+            else:
+                action = policy.get(position)
+                token = ACTION_LABELS.get(action, ".")
+            row_tokens.append(token)
+        lines.append(f"x{x}: " + " ".join(row_tokens))
+
+    return "\n".join(lines)
+
+
+def _write_policy_report(sections: list[str], output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text("\n\n".join(sections) + "\n", encoding="utf-8")
+    return output_path
+
+
 def run_all_experiments(
     episodes: int,
     seed: int,
@@ -230,16 +394,34 @@ def run_all_experiments(
         ("TDPrediction", _run_td_prediction),
         ("SARSAAgent", _run_sarsa),
         ("QLearningAgent", _run_q_learning),
+        ("DynaQAgent", _run_dyna_q),
     ]
 
     metrics_by_algo: MetricsByAlgorithm = {}
     generated_plots: list[Path] = []
+    policy_sections: list[str] = []
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
+    grid_size = 6
+    goal_position = (grid_size - 1, grid_size - 1)
 
     for algo_name, train_fn in trainers:
         metrics, table = train_fn(episodes, seed)
         metrics_by_algo[algo_name] = metrics
+
+        if algo_name == "TDPrediction":
+            derived_policy = _derive_policy_from_v_table(table, grid_size)
+        else:
+            derived_policy = _derive_policy_from_q_table(table, grid_size)
+
+        policy_sections.append(
+            _format_policy_grid(
+                algo_name=algo_name,
+                policy=derived_policy,
+                grid_size=grid_size,
+                goal_position=goal_position,
+            )
+        )
 
         generated_plots.append(
             plot_algorithm_learning_curves(algo_name, metrics, output_path, smooth_window)
@@ -259,6 +441,10 @@ def run_all_experiments(
     generated_plots.append(plot_learning_curves(metrics_by_algo, output_path, smooth_window))
     generated_plots.append(plot_steps_comparison(metrics_by_algo, output_path, smooth_window))
     generated_plots.append(plot_summary_metrics(metrics_by_algo, output_path))
+
+    policy_report_path = output_path.parent / "tables" / "policies_report.txt"
+    _write_policy_report(policy_sections, policy_report_path)
+
     return metrics_by_algo, generated_plots
 
 
@@ -300,6 +486,11 @@ def main() -> None:
     print("Generated plots:")
     for plot_path in generated_plots:
         print(f"- {plot_path}")
+
+    policy_report_path = Path(args.output_dir).parent / "tables" / "policies_report.txt"
+    if policy_report_path.exists():
+        print(f"Policy report: {policy_report_path}")
+        print("\n" + policy_report_path.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

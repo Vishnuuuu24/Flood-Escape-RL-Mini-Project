@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from algorithms import QLearningAgent, SARSAAgent, observation_to_state_key
+from algorithms import DynaQAgent, QLearningAgent, SARSAAgent, observation_to_state_key
 
 
 def _state(agent_xy: tuple[int, int], flood_grid: np.ndarray) -> tuple[tuple[int, int], bytes]:
@@ -12,7 +12,7 @@ def _state(agent_xy: tuple[int, int], flood_grid: np.ndarray) -> tuple[tuple[int
     return (agent_xy, np.ascontiguousarray(flood_grid.astype(np.uint8)).tobytes())
 
 
-@pytest.mark.parametrize("agent_cls", [QLearningAgent, SARSAAgent])
+@pytest.mark.parametrize("agent_cls", [QLearningAgent, SARSAAgent, DynaQAgent])
 def test_terminal_state_q_values_remain_zeros_and_never_update(agent_cls: type) -> None:
     flood = np.zeros((2, 2), dtype=np.uint8)
     terminal_state = _state((1, 1), flood)
@@ -90,3 +90,15 @@ def test_epsilon_decay_converges_to_min_and_never_goes_below_floor() -> None:
         assert current >= agent.min_epsilon
 
     assert agent.epsilon == pytest.approx(agent.min_epsilon)
+
+
+def test_dyna_q_planning_accelerates_value_update() -> None:
+    flood = np.zeros((2, 2), dtype=np.uint8)
+    state = _state((0, 0), flood)
+    next_state = _state((0, 1), flood)
+
+    agent = DynaQAgent(n_actions=4, alpha=0.5, gamma=0.0, planning_steps=10)
+    agent.update(state=state, action=0, reward=1.0, next_state=next_state, done=False)
+
+    # Real update alone would set Q to 0.5; planning should push it closer to 1.0.
+    assert agent.q_values(state)[0] > 0.5

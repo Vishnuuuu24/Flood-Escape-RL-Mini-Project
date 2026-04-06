@@ -11,6 +11,7 @@ This repository initializes the collaboration baseline for:
   - TD(0)
   - SARSA
   - Q-learning
+  - Dyna-Q (model-based planning + replay)
 - Shared utilities, experiments, and results directories for repeatable evaluation.
 
 ## Directory Structure
@@ -113,6 +114,23 @@ Generated plot artifacts are written to:
 ```text
 results/plots/
 ```
+
+## Algorithms Used
+
+- Monte Carlo Control:
+Learns from complete episodes by computing returns backward from terminal states. Good baseline for episodic learning.
+
+- TD(0) Prediction:
+Learns state values incrementally at every step. More sample-efficient than pure Monte Carlo for value estimation.
+
+- SARSA (On-policy):
+Updates using the next action actually selected by the current policy. Usually safer in risky environments.
+
+- Q-learning (Off-policy):
+Updates using the maximum next-state action value, regardless of exploratory action. Often learns aggressive shortest-path behavior.
+
+- Dyna-Q (Added Advanced Method):
+Combines Q-learning with a learned transition model and planning updates. After each real step, it replays model transitions to learn faster from mistakes and successes. In this project, this is the strongest additional tabular upgrade for sample efficiency.
 
 ## Run
 
