@@ -28,6 +28,12 @@ def test_run_all_experiments_micro_training_artifacts_and_metrics(tmp_path: Path
 
     expected_files = {
         "learning_curves.png",
+        "learning_montecarlocontrol.png",
+        "learning_tdprediction.png",
+        "learning_sarsaagent.png",
+        "learning_qlearningagent.png",
+        "steps_comparison.png",
+        "summary_metrics.png",
         "value_heatmap_montecarlocontrol.png",
         "policy_montecarlocontrol.png",
         "value_heatmap_tdprediction.png",

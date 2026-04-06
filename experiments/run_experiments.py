@@ -14,7 +14,14 @@ from algorithms.q_learning import QLearningAgent
 from algorithms.sarsa import SARSAAgent
 from algorithms.td_learning import TDPrediction
 from env import FloodEscapeEnv
-from utils import plot_learning_curves, plot_policy, plot_value_heatmap
+from utils import (
+    plot_algorithm_learning_curves,
+    plot_learning_curves,
+    plot_policy,
+    plot_steps_comparison,
+    plot_summary_metrics,
+    plot_value_heatmap,
+)
 
 MetricValue = float | int
 Metrics = dict[str, list[MetricValue]]
@@ -234,6 +241,10 @@ def run_all_experiments(
         metrics, table = train_fn(episodes, seed)
         metrics_by_algo[algo_name] = metrics
 
+        generated_plots.append(
+            plot_algorithm_learning_curves(algo_name, metrics, output_path, smooth_window)
+        )
+
         heatmap_file = output_path / f"value_heatmap_{algo_name.lower()}.png"
         generated_plots.append(
             plot_value_heatmap(table, heatmap_file, grid_size=6, title=f"{algo_name} Value Heatmap")
@@ -246,6 +257,8 @@ def run_all_experiments(
             )
 
     generated_plots.append(plot_learning_curves(metrics_by_algo, output_path, smooth_window))
+    generated_plots.append(plot_steps_comparison(metrics_by_algo, output_path, smooth_window))
+    generated_plots.append(plot_summary_metrics(metrics_by_algo, output_path))
     return metrics_by_algo, generated_plots
 
 

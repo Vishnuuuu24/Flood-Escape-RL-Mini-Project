@@ -12,6 +12,7 @@ import numpy as np
 import seaborn as sns
 
 Numeric: TypeAlias = float | int
+AlgorithmMetrics: TypeAlias = Mapping[str, Sequence[Numeric]]
 MetricsByAlgorithm: TypeAlias = Mapping[str, Mapping[str, Sequence[Numeric]]]
 StateLike: TypeAlias = tuple[tuple[int, int], bytes]
 TableLike: TypeAlias = Mapping[StateLike, Numeric | np.ndarray]
@@ -161,6 +162,146 @@ def plot_learning_curves(
     ax_success.set_ylabel("Success")
     ax_success.set_ylim(-0.05, 1.05)
     ax_success.legend(loc="best")
+
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(figure)
+    return output_path
+
+
+def plot_algorithm_learning_curves(
+    algo_name: str,
+    metrics: AlgorithmMetrics,
+    output_dir: str | Path,
+    smooth_window: int,
+) -> Path:
+    """Plot detailed individual learning curves for a single algorithm."""
+    target_dir = _ensure_plots_dir(output_dir)
+    output_path = target_dir / f"learning_{algo_name.lower()}.png"
+
+    rewards = np.asarray(metrics.get("reward_per_episode", ()), dtype=np.float64)
+    successes = np.asarray(metrics.get("success_per_episode", ()), dtype=np.float64)
+    steps = np.asarray(metrics.get("steps_per_episode", ()), dtype=np.float64)
+
+    if rewards.size == 0:
+        raise ValueError(f"No reward data available for algorithm '{algo_name}'.")
+
+    rewards_smoothed = _running_mean(rewards, smooth_window)
+    success_smoothed = _running_mean(successes, smooth_window)
+    steps_smoothed = _running_mean(steps, smooth_window)
+
+    x_values = np.arange(1, rewards.size + 1)
+
+    sns.set_theme(style="whitegrid")
+    figure, (ax_reward, ax_success, ax_steps) = plt.subplots(3, 1, figsize=(12, 11), sharex=True)
+
+    ax_reward.plot(x_values, rewards, alpha=0.25, linewidth=1.0, label="Raw")
+    ax_reward.plot(x_values, rewards_smoothed, linewidth=2.0, label="Smoothed")
+    ax_reward.set_title(f"{algo_name}: Reward per Episode")
+    ax_reward.set_ylabel("Reward")
+    ax_reward.legend(loc="best")
+
+    ax_success.step(x_values, successes, where="mid", alpha=0.25, linewidth=1.0, label="Raw")
+    ax_success.plot(x_values, success_smoothed, linewidth=2.0, label="Smoothed")
+    ax_success.set_title(f"{algo_name}: Success per Episode")
+    ax_success.set_ylabel("Success")
+    ax_success.set_ylim(-0.05, 1.05)
+    ax_success.legend(loc="best")
+
+    ax_steps.plot(x_values, steps, alpha=0.25, linewidth=1.0, label="Raw")
+    ax_steps.plot(x_values, steps_smoothed, linewidth=2.0, label="Smoothed")
+    ax_steps.set_title(f"{algo_name}: Steps per Episode")
+    ax_steps.set_xlabel("Episode")
+    ax_steps.set_ylabel("Steps")
+    ax_steps.legend(loc="best")
+
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(figure)
+    return output_path
+
+
+def plot_steps_comparison(
+    metrics_by_algo: MetricsByAlgorithm,
+    output_dir: str | Path,
+    smooth_window: int,
+) -> Path:
+    """Plot smoothed steps-per-episode comparison across algorithms."""
+    if not metrics_by_algo:
+        raise ValueError("metrics_by_algo must not be empty.")
+
+    target_dir = _ensure_plots_dir(output_dir)
+    output_path = target_dir / "steps_comparison.png"
+
+    sns.set_theme(style="whitegrid")
+    figure, ax = plt.subplots(figsize=(12, 5))
+
+    for algo_name, metrics in metrics_by_algo.items():
+        steps = metrics.get("steps_per_episode", ())
+        steps_smoothed = _running_mean(steps, smooth_window)
+        x_values = np.arange(1, steps_smoothed.size + 1)
+        ax.plot(x_values, steps_smoothed, linewidth=2.0, label=algo_name)
+
+    ax.set_title("Smoothed Steps per Episode (All Algorithms)")
+    ax.set_xlabel("Episode")
+    ax.set_ylabel("Steps")
+    ax.legend(loc="best")
+
+    figure.tight_layout()
+    figure.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(figure)
+    return output_path
+
+
+def plot_summary_metrics(
+    metrics_by_algo: MetricsByAlgorithm,
+    output_dir: str | Path,
+    tail_fraction: float = 0.20,
+) -> Path:
+    """Plot compact bar summaries over the final fraction of episodes."""
+    if not metrics_by_algo:
+        raise ValueError("metrics_by_algo must not be empty.")
+
+    target_dir = _ensure_plots_dir(output_dir)
+    output_path = target_dir / "summary_metrics.png"
+
+    names = list(metrics_by_algo.keys())
+    avg_reward: list[float] = []
+    avg_success: list[float] = []
+    avg_steps: list[float] = []
+
+    for algo_name in names:
+        metrics = metrics_by_algo[algo_name]
+
+        rewards = np.asarray(metrics.get("reward_per_episode", ()), dtype=np.float64)
+        successes = np.asarray(metrics.get("success_per_episode", ()), dtype=np.float64)
+        steps = np.asarray(metrics.get("steps_per_episode", ()), dtype=np.float64)
+
+        window = max(1, int(np.ceil(rewards.size * tail_fraction)))
+
+        avg_reward.append(float(np.mean(rewards[-window:])))
+        avg_success.append(float(np.mean(successes[-window:])))
+        avg_steps.append(float(np.mean(steps[-window:])))
+
+    sns.set_theme(style="whitegrid")
+    figure, axes = plt.subplots(1, 3, figsize=(14, 5))
+    positions = np.arange(len(names))
+
+    axes[0].bar(positions, avg_reward, color="#1f77b4")
+    axes[0].set_title("Avg Reward (Final 20%)")
+    axes[0].set_xticks(positions)
+    axes[0].set_xticklabels(names, rotation=20, ha="right")
+
+    axes[1].bar(positions, avg_success, color="#2ca02c")
+    axes[1].set_title("Avg Success (Final 20%)")
+    axes[1].set_ylim(0.0, 1.0)
+    axes[1].set_xticks(positions)
+    axes[1].set_xticklabels(names, rotation=20, ha="right")
+
+    axes[2].bar(positions, avg_steps, color="#ff7f0e")
+    axes[2].set_title("Avg Steps (Final 20%)")
+    axes[2].set_xticks(positions)
+    axes[2].set_xticklabels(names, rotation=20, ha="right")
 
     figure.tight_layout()
     figure.savefig(output_path, dpi=200, bbox_inches="tight")
