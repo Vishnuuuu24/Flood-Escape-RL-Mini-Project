@@ -17,8 +17,10 @@ from algorithms.td_learning import TDPrediction
 from env import FloodEscapeEnv
 from utils import (
     plot_algorithm_learning_curves,
+    plot_environment_rollouts,
     plot_learning_curves,
     plot_policy,
+    plot_policy_grid_image,
     plot_steps_comparison,
     plot_summary_metrics,
     plot_value_heatmap,
@@ -382,6 +384,42 @@ def _write_policy_report(sections: list[str], output_path: Path) -> Path:
     return output_path
 
 
+def _simulate_policy_rollout(
+    policy: PolicyByPosition,
+    *,
+    seed: int,
+    max_steps: int = 100,
+) -> dict[str, object]:
+    """Simulate one greedy rollout for environment-level visualization."""
+    env = FloodEscapeEnv(max_steps=max_steps)
+    obs, _ = env.reset(seed=seed)
+    path: list[tuple[int, int]] = [
+        (int(obs["agent"][0]), int(obs["agent"][1]))
+    ]
+
+    terminated = False
+    truncated = False
+    steps = 0
+
+    while not (terminated or truncated):
+        current_position = (int(obs["agent"][0]), int(obs["agent"][1]))
+        action = int(policy.get(current_position, 0))
+
+        obs, _, terminated, truncated, _ = env.step(action)
+        path.append((int(obs["agent"][0]), int(obs["agent"][1])))
+        steps += 1
+
+    final_position = (int(obs["agent"][0]), int(obs["agent"][1]))
+    success = bool(terminated and final_position == env.goal_position)
+
+    return {
+        "path": path,
+        "flood_map": np.asarray(obs["flood"], dtype=np.float64),
+        "success": success,
+        "steps": steps,
+    }
+
+
 def run_all_experiments(
     episodes: int,
     seed: int,
@@ -399,6 +437,7 @@ def run_all_experiments(
 
     metrics_by_algo: MetricsByAlgorithm = {}
     generated_plots: list[Path] = []
+    derived_policies: dict[str, PolicyByPosition] = {}
     policy_sections: list[str] = []
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -413,6 +452,7 @@ def run_all_experiments(
             derived_policy = _derive_policy_from_v_table(table, grid_size)
         else:
             derived_policy = _derive_policy_from_q_table(table, grid_size)
+        derived_policies[algo_name] = derived_policy
 
         policy_sections.append(
             _format_policy_grid(
@@ -425,6 +465,17 @@ def run_all_experiments(
 
         generated_plots.append(
             plot_algorithm_learning_curves(algo_name, metrics, output_path, smooth_window)
+        )
+
+        policy_grid_file = output_path / f"policy_grid_{algo_name.lower()}.png"
+        generated_plots.append(
+            plot_policy_grid_image(
+                algo_name=algo_name,
+                policy=derived_policy,
+                output_path=policy_grid_file,
+                grid_size=grid_size,
+                goal_position=goal_position,
+            )
         )
 
         heatmap_file = output_path / f"value_heatmap_{algo_name.lower()}.png"
@@ -441,6 +492,23 @@ def run_all_experiments(
     generated_plots.append(plot_learning_curves(metrics_by_algo, output_path, smooth_window))
     generated_plots.append(plot_steps_comparison(metrics_by_algo, output_path, smooth_window))
     generated_plots.append(plot_summary_metrics(metrics_by_algo, output_path))
+
+    rollout_views = {
+        algo_name: _simulate_policy_rollout(
+            policy,
+            seed=_episode_seed(seed, 8, index),
+            max_steps=100,
+        )
+        for index, (algo_name, policy) in enumerate(derived_policies.items())
+    }
+    generated_plots.append(
+        plot_environment_rollouts(
+            rollout_views,
+            output_path / "environment_rollouts.png",
+            grid_size=grid_size,
+            goal_position=goal_position,
+        )
+    )
 
     policy_report_path = output_path.parent / "tables" / "policies_report.txt"
     _write_policy_report(policy_sections, policy_report_path)

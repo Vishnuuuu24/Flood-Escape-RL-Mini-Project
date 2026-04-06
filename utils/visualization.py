@@ -17,6 +17,15 @@ MetricsByAlgorithm: TypeAlias = Mapping[str, Mapping[str, Sequence[Numeric]]]
 StateLike: TypeAlias = tuple[tuple[int, int], bytes]
 TableLike: TypeAlias = Mapping[StateLike, Numeric | np.ndarray]
 QTableLike: TypeAlias = Mapping[StateLike, np.ndarray]
+PolicyByPosition: TypeAlias = Mapping[tuple[int, int], int]
+RolloutRecord: TypeAlias = Mapping[str, object]
+
+ACTION_LABELS = {
+    0: "U",
+    1: "D",
+    2: "L",
+    3: "R",
+}
 
 
 def _ensure_plots_dir(output_dir: str | Path | None = None) -> Path:
@@ -416,5 +425,137 @@ def plot_policy(
 
     figure.tight_layout()
     figure.savefig(resolved_output_path, dpi=200, bbox_inches="tight")
+    plt.close(figure)
+    return resolved_output_path
+
+
+def plot_policy_grid_image(
+    algo_name: str,
+    policy: PolicyByPosition,
+    output_path: str | Path,
+    grid_size: int = 6,
+    goal_position: tuple[int, int] = (5, 5),
+) -> Path:
+    """Render a terminal-style policy grid as a clean image artifact."""
+    if grid_size <= 0:
+        raise ValueError("grid_size must be positive.")
+
+    resolved_output_path = _ensure_parent_dir(output_path)
+
+    grid_symbols = np.full((grid_size, grid_size), ".", dtype="<U1")
+    for (x, y), action in policy.items():
+        if 0 <= x < grid_size and 0 <= y < grid_size:
+            grid_symbols[x, y] = ACTION_LABELS.get(int(action), ".")
+
+    gx, gy = goal_position
+    if 0 <= gx < grid_size and 0 <= gy < grid_size:
+        grid_symbols[gx, gy] = "G"
+
+    figure, ax = plt.subplots(figsize=(6.6, 6.6))
+    ax.axis("off")
+
+    table = ax.table(
+        cellText=grid_symbols,
+        cellLoc="center",
+        loc="center",
+        colLabels=[f"y{idx}" for idx in range(grid_size)],
+        rowLabels=[f"x{idx}" for idx in range(grid_size)],
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(12)
+    table.scale(1.1, 1.55)
+
+    for x in range(grid_size):
+        for y in range(grid_size):
+            cell = table[(x + 1, y)]
+            symbol = grid_symbols[x, y]
+
+            if symbol == "G":
+                cell.set_facecolor("#ffe082")
+            elif symbol == ".":
+                cell.set_facecolor("#f5f5f5")
+            else:
+                cell.set_facecolor("#e8f4fd")
+
+    ax.set_title(
+        f"{algo_name} Policy Grid\nLegend: U=Up, D=Down, L=Left, R=Right, G=Goal, .=Unknown",
+        fontsize=11,
+        pad=16,
+    )
+
+    figure.tight_layout()
+    figure.savefig(resolved_output_path, dpi=220, bbox_inches="tight")
+    plt.close(figure)
+    return resolved_output_path
+
+
+def plot_environment_rollouts(
+    rollouts_by_algo: Mapping[str, RolloutRecord],
+    output_path: str | Path,
+    grid_size: int = 6,
+    goal_position: tuple[int, int] = (5, 5),
+) -> Path:
+    """Visualize environment rollouts for all algorithms on one panel."""
+    if not rollouts_by_algo:
+        raise ValueError("rollouts_by_algo must not be empty.")
+    if grid_size <= 0:
+        raise ValueError("grid_size must be positive.")
+
+    resolved_output_path = _ensure_parent_dir(output_path)
+    algo_names = list(rollouts_by_algo.keys())
+    n_plots = len(algo_names)
+    n_cols = 2
+    n_rows = int(np.ceil(n_plots / n_cols))
+
+    figure, axes = plt.subplots(n_rows, n_cols, figsize=(11, 4.8 * n_rows))
+    axes_array = np.atleast_1d(axes).reshape(n_rows, n_cols)
+
+    for index, algo_name in enumerate(algo_names):
+        row = index // n_cols
+        col = index % n_cols
+        ax = axes_array[row, col]
+
+        rollout = rollouts_by_algo[algo_name]
+        path = np.asarray(rollout.get("path", []), dtype=np.int64)
+        flood_map = np.asarray(rollout.get("flood_map", np.zeros((grid_size, grid_size))), dtype=np.float64)
+        success = bool(rollout.get("success", False))
+        steps = int(rollout.get("steps", 0))
+
+        if flood_map.shape != (grid_size, grid_size):
+            flood_map = np.zeros((grid_size, grid_size), dtype=np.float64)
+
+        ax.imshow(flood_map, cmap="Blues", vmin=0.0, vmax=1.0, alpha=0.38)
+
+        ax.set_xticks(np.arange(grid_size))
+        ax.set_yticks(np.arange(grid_size))
+        ax.set_xticklabels([f"y{idx}" for idx in range(grid_size)], fontsize=8)
+        ax.set_yticklabels([f"x{idx}" for idx in range(grid_size)], fontsize=8)
+        ax.set_xlim(-0.5, grid_size - 0.5)
+        ax.set_ylim(grid_size - 0.5, -0.5)
+        ax.grid(True, color="lightgray", linewidth=0.6)
+
+        gy, gx = goal_position[1], goal_position[0]
+        ax.scatter(gy, gx, marker="*", s=180, color="#f9a825", edgecolor="black", linewidth=0.6, zorder=4)
+
+        if path.ndim == 2 and path.shape[0] > 0 and path.shape[1] >= 2:
+            path_y = path[:, 1]
+            path_x = path[:, 0]
+
+            ax.plot(path_y, path_x, color="#263238", linewidth=1.8, alpha=0.9, zorder=3)
+            ax.scatter(path_y[0], path_x[0], marker="o", s=60, color="#2e7d32", zorder=5, label="Start")
+            end_color = "#2e7d32" if success else "#c62828"
+            ax.scatter(path_y[-1], path_x[-1], marker="X", s=70, color=end_color, zorder=5, label="End")
+
+        status_text = "Success" if success else "Fail/Timeout"
+        ax.set_title(f"{algo_name}: {status_text} | Steps={steps}", fontsize=10)
+
+    for index in range(n_plots, n_rows * n_cols):
+        row = index // n_cols
+        col = index % n_cols
+        axes_array[row, col].axis("off")
+
+    figure.suptitle("Environment Rollout Overview (Greedy Policy)", fontsize=13, y=0.995)
+    figure.tight_layout()
+    figure.savefig(resolved_output_path, dpi=220, bbox_inches="tight")
     plt.close(figure)
     return resolved_output_path

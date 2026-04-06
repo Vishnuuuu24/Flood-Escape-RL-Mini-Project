@@ -115,6 +115,11 @@ Generated plot artifacts are written to:
 results/plots/
 ```
 
+Notable visual outputs include:
+- `policy_grid_<algorithm>.png` (terminal-style policy rendered as image)
+- `policy_<algorithm>.png` (arrow policy field)
+- `environment_rollouts.png` (agent trajectories over final flood states)
+
 ## Algorithms Used
 
 - Monte Carlo Control:
