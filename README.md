@@ -14,6 +14,13 @@ This repository initializes the collaboration baseline for:
   - Dyna-Q (model-based planning + replay)
 - Shared utilities, experiments, and results directories for repeatable evaluation.
 
+## Environment Notes
+
+- State representation uses a local flood sensor with radius 1 (3x3 neighborhood) around the agent.
+- This intentionally keeps the tabular state space manageable, but makes the task partially observable.
+- Default flood spread probability is 0.5 to balance hazard pressure and learning signal on the 6x6 grid.
+- You can still override `flood_spread_prob` and `move_success_prob` per experiment.
+
 ## Directory Structure
 
 ```

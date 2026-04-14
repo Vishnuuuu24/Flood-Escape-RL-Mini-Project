@@ -64,3 +64,4 @@ results/tables/*
 # Local environment files
 .env
 .env.*
+previous_results/

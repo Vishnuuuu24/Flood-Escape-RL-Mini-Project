@@ -85,8 +85,6 @@ class BaseTabularAgent:
             if row is None:
                 row = np.zeros(self.n_actions, dtype=np.float64)
                 self.q_table[state] = row
-            else:
-                row.fill(0.0)
             return row
 
         row = self.q_table.get(state)

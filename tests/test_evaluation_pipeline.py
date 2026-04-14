@@ -5,7 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-from experiments.run_experiments import run_all_experiments
+from algorithms import TDPrediction, observation_to_state_key
+from experiments.run_experiments import _episode_seed, _is_success, _td_behavior_action, run_all_experiments
 
 
 def test_run_all_experiments_micro_training_artifacts_and_metrics(tmp_path: Path) -> None:
@@ -120,3 +121,54 @@ def test_policy_report_includes_phase3_sparsity_and_coverage_metrics(tmp_path: P
         "DynaQAgent",
     ):
         assert f"{algo_name} sparsity" in report_text
+
+
+def test_td_behavior_action_uses_position_specific_sensor_keys() -> None:
+    flood = np.zeros((6, 6), dtype=np.uint8)
+    flood[2, 2] = 1
+
+    observation = {
+        "agent": np.array([2, 1], dtype=np.int32),
+        "flood": flood,
+    }
+
+    td_agent = TDPrediction()
+    td_agent.v_table[observation_to_state_key({"agent": np.array([1, 1]), "flood": flood})] = 10.0
+    td_agent.v_table[observation_to_state_key({"agent": np.array([3, 1]), "flood": flood})] = 1.0
+    td_agent.v_table[observation_to_state_key({"agent": np.array([2, 0]), "flood": flood})] = 2.0
+    td_agent.v_table[observation_to_state_key({"agent": np.array([2, 2]), "flood": flood})] = 3.0
+
+    action = _td_behavior_action(
+        observation,
+        td_agent,
+        np.random.default_rng(0),
+        epsilon=0.0,
+        move_success_prob=0.8,
+    )
+
+    assert action == 0
+
+
+def test_success_detection_counts_goal_even_if_truncated_flag_is_set() -> None:
+    goal_position = (5, 5)
+    final_state = (goal_position, b"\x00")
+
+    assert (
+        _is_success(
+            terminated=False,
+            truncated=True,
+            final_state=final_state,
+            goal_position=goal_position,
+        )
+        == 1
+    )
+
+
+def test_episode_seed_is_algorithm_invariant_for_fair_comparison() -> None:
+    base_seed = 42
+    episode_index = 11
+
+    assert _episode_seed(base_seed, 0, episode_index) == _episode_seed(base_seed, 1, episode_index)
+    assert _episode_seed(base_seed, 1, episode_index) == _episode_seed(base_seed, 4, episode_index)
+
+    assert _episode_seed(base_seed, 0, episode_index + 1) != _episode_seed(base_seed, 0, episode_index)

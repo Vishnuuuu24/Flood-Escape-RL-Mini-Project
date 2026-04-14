@@ -15,12 +15,18 @@ class TDPrediction:
         alpha: float = 0.1,
         alpha_decay: float = 1.0,
         min_alpha: float = 0.01,
+        epsilon: float = 1.0,
+        epsilon_decay: float = 0.995,
+        min_epsilon: float = 0.05,
     ) -> None:
         """Initialize TD(0) hyperparameters and value table."""
         self.gamma = float(gamma)
         self.alpha = float(alpha)
         self.alpha_decay = float(alpha_decay)
         self.min_alpha = float(min_alpha)
+        self.epsilon = float(epsilon)
+        self.epsilon_decay = float(epsilon_decay)
+        self.min_epsilon = float(min_epsilon)
 
         self.v_table: dict[StateKey, float] = {}
         self.terminal_states: set[StateKey] = set()
@@ -67,3 +73,12 @@ class TDPrediction:
         """Apply multiplicative learning-rate decay with a floor."""
         self.alpha = max(self.min_alpha, self.alpha * self.alpha_decay)
         return self.alpha
+
+    def decay_epsilon(self) -> float:
+        """Apply multiplicative exploration decay with a floor."""
+        self.epsilon = max(self.min_epsilon, self.epsilon * self.epsilon_decay)
+        return self.epsilon
+
+    def decay_hyperparameters(self) -> tuple[float, float]:
+        """Decay both alpha and epsilon, returning updated values."""
+        return self.decay_alpha(), self.decay_epsilon()

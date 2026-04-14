@@ -52,43 +52,73 @@ def _init_metrics() -> Metrics:
     }
 
 
-def _episode_seed(base_seed: int, algo_offset: int, episode_index: int) -> int:
-    return base_seed + (algo_offset * 100_000) + episode_index
+def _episode_seed(base_seed: int, _algo_offset: int, episode_index: int) -> int:
+    """Generate per-episode seeds shared across algorithms for fair comparison."""
+    return base_seed + episode_index
 
 
-def _is_success(terminated: bool, final_state: StateKey, goal_position: tuple[int, int]) -> int:
-    return 1 if terminated and final_state[0] == goal_position else 0
+def _is_success(
+    *,
+    terminated: bool,
+    truncated: bool,
+    final_state: StateKey,
+    goal_position: tuple[int, int],
+) -> int:
+    return 1 if (terminated or truncated) and final_state[0] == goal_position else 0
 
 
 def _td_behavior_action(
-    state: StateKey,
+    observation: dict[str, np.ndarray],
     td_agent: TDPrediction,
     rng: np.random.Generator,
     *,
     epsilon: float,
-    grid_size: int,
+    move_success_prob: float,
 ) -> int:
     """Epsilon-greedy behavior policy for TD(0) over one-step value lookahead."""
     if rng.random() < epsilon:
         return int(rng.integers(0, 4))
 
-    x, y = state[0]
-    local_sensor_bytes = state[1]
+    agent_position = np.asarray(observation["agent"], dtype=np.int64).reshape(-1)
+    x, y = int(agent_position[0]), int(agent_position[1])
+    flood_grid = np.asarray(observation["flood"], dtype=np.uint8)
+    grid_size = int(flood_grid.shape[0])
 
-    candidates = {
+    def _state_for_position(position: tuple[int, int]) -> StateKey:
+        return observation_to_state_key(
+            {
+                "agent": np.asarray(position, dtype=np.int64),
+                "flood": flood_grid,
+            }
+        )
+
+    # 1. Identify all 4 possible intended next-positions.
+    intended_positions = {
         0: (max(0, x - 1), y),
         1: (min(grid_size - 1, x + 1), y),
         2: (x, max(0, y - 1)),
         3: (x, min(grid_size - 1, y + 1)),
     }
 
-    values = np.empty(4, dtype=np.float64)
-    for action, next_pos in candidates.items():
-        next_state: StateKey = (next_pos, local_sensor_bytes)
-        values[action] = td_agent.value(next_state)
+    # 2. Get the values of all possible neighbors for weighted randomness.
+    # The agent gets a random neighboring cell 20% of the time on move failure.
+    neighbor_positions = []
+    for dx, dy in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+        nx, ny = x + dx, y + dy
+        if 0 <= nx < grid_size and 0 <= ny < grid_size:
+            neighbor_positions.append((nx, ny))
 
-    max_value = float(np.max(values))
-    best_actions = np.flatnonzero(np.isclose(values, max_value))
+    neighbor_values = [td_agent.value(_state_for_position(pos)) for pos in neighbor_positions]
+    avg_neighbor_value = float(np.mean(neighbor_values)) if neighbor_positions else 0.0
+
+    # 3. Compute expected value for each action: p * V(intended) + (1-p) * E[V(random_neighbor)].
+    action_expectations = np.empty(4, dtype=np.float64)
+    for action, pos in intended_positions.items():
+        v_intended = td_agent.value(_state_for_position(pos))
+        action_expectations[action] = (move_success_prob * v_intended) + ((1.0 - move_success_prob) * avg_neighbor_value)
+
+    max_value = float(np.max(action_expectations))
+    best_actions = np.flatnonzero(np.isclose(action_expectations, max_value))
     return int(best_actions[int(rng.integers(0, len(best_actions)))])
 
 
@@ -106,6 +136,8 @@ def _run_monte_carlo(
         state = observation_to_state_key(obs)
         visited_states.add(state)
         done = False
+        terminated = False
+        truncated = False
 
         episode_reward = 0.0
         episode_steps = 0
@@ -124,9 +156,19 @@ def _run_monte_carlo(
             done = bool(terminated or truncated)
             state = next_state
 
-        agent.end_episode()
+        agent.end_episode(
+            terminal_state=state if bool(terminated) else None,
+            terminated=bool(terminated),
+        )
         metrics["reward_per_episode"].append(episode_reward)
-        metrics["success_per_episode"].append(_is_success(bool(terminated), state, env.goal_position))
+        metrics["success_per_episode"].append(
+            _is_success(
+                terminated=bool(terminated),
+                truncated=bool(truncated),
+                final_state=state,
+                goal_position=env.goal_position,
+            )
+        )
         metrics["steps_per_episode"].append(episode_steps)
 
     return metrics, agent.q_table, visited_states
@@ -148,6 +190,8 @@ def _run_sarsa(
         action = agent.select_action(state, explore=True)
 
         done = False
+        terminated = False
+        truncated = False
         episode_reward = 0.0
         episode_steps = 0
 
@@ -175,7 +219,14 @@ def _run_sarsa(
 
         agent.decay_hyperparameters()
         metrics["reward_per_episode"].append(episode_reward)
-        metrics["success_per_episode"].append(_is_success(bool(terminated), state, env.goal_position))
+        metrics["success_per_episode"].append(
+            _is_success(
+                terminated=bool(terminated),
+                truncated=bool(truncated),
+                final_state=state,
+                goal_position=env.goal_position,
+            )
+        )
         metrics["steps_per_episode"].append(episode_steps)
 
     return metrics, agent.q_table, visited_states
@@ -195,6 +246,8 @@ def _run_q_learning(
         visited_states.add(state)
 
         done = False
+        terminated = False
+        truncated = False
         episode_reward = 0.0
         episode_steps = 0
 
@@ -220,7 +273,14 @@ def _run_q_learning(
 
         agent.decay_hyperparameters()
         metrics["reward_per_episode"].append(episode_reward)
-        metrics["success_per_episode"].append(_is_success(bool(terminated), state, env.goal_position))
+        metrics["success_per_episode"].append(
+            _is_success(
+                terminated=bool(terminated),
+                truncated=bool(truncated),
+                final_state=state,
+                goal_position=env.goal_position,
+            )
+        )
         metrics["steps_per_episode"].append(episode_steps)
 
     return metrics, agent.q_table, visited_states
@@ -241,6 +301,8 @@ def _run_dyna_q(
         visited_states.add(state)
 
         done = False
+        terminated = False
+        truncated = False
         episode_reward = 0.0
         episode_steps = 0
 
@@ -266,7 +328,14 @@ def _run_dyna_q(
 
         agent.decay_hyperparameters()
         metrics["reward_per_episode"].append(episode_reward)
-        metrics["success_per_episode"].append(_is_success(bool(terminated), state, env.goal_position))
+        metrics["success_per_episode"].append(
+            _is_success(
+                terminated=bool(terminated),
+                truncated=bool(truncated),
+                final_state=state,
+                goal_position=env.goal_position,
+            )
+        )
         metrics["steps_per_episode"].append(episode_steps)
 
     return metrics, agent.q_table, visited_states
@@ -288,16 +357,18 @@ def _run_td_prediction(
         visited_states.add(state)
 
         done = False
+        terminated = False
+        truncated = False
         episode_reward = 0.0
         episode_steps = 0
 
         while not done:
             action = _td_behavior_action(
-                state,
+                obs,
                 agent,
                 rng,
-                epsilon=0.10,
-                grid_size=env.grid_size,
+                epsilon=agent.epsilon,
+                move_success_prob=env.move_success_prob,
             )
             next_obs, reward, terminated, truncated, _ = env.step(action)
             next_state = observation_to_state_key(next_obs)
@@ -314,11 +385,19 @@ def _run_td_prediction(
 
             episode_reward += float(reward)
             episode_steps += 1
+            obs = next_obs
             state = next_state
 
-        agent.decay_alpha()
+        agent.decay_hyperparameters()
         metrics["reward_per_episode"].append(episode_reward)
-        metrics["success_per_episode"].append(_is_success(bool(terminated), state, env.goal_position))
+        metrics["success_per_episode"].append(
+            _is_success(
+                terminated=bool(terminated),
+                truncated=bool(truncated),
+                final_state=state,
+                goal_position=env.goal_position,
+            )
+        )
         metrics["steps_per_episode"].append(episode_steps)
 
     return metrics, agent.v_table, visited_states
@@ -727,13 +806,14 @@ def run_all_experiments(
     generated_plots.append(plot_steps_comparison(metrics_by_algo, output_path, smooth_window))
     generated_plots.append(plot_summary_metrics(metrics_by_algo, output_path))
 
+    rollout_seed = _episode_seed(seed, 8, 0)
     rollout_views = {
         algo_name: _simulate_policy_rollout(
             policy,
-            seed=_episode_seed(seed, 8, index),
+            seed=rollout_seed,
             max_steps=100,
         )
-        for index, (algo_name, policy) in enumerate(derived_policies.items())
+        for algo_name, policy in derived_policies.items()
     }
     generated_plots.append(
         plot_environment_rollouts(

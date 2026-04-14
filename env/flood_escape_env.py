@@ -33,7 +33,7 @@ class FloodEscapeEnv(gym.Env[Observation, int]):
         *,
         max_steps: int = 100,
         move_success_prob: float = 0.8,
-        flood_spread_prob: float = 0.7,
+        flood_spread_prob: float = 0.5,
         goal_position: Position = (5, 5),
         initial_flood_cells: tuple[Position, ...] = ((0, 5),),
     ) -> None:
@@ -47,12 +47,13 @@ class FloodEscapeEnv(gym.Env[Observation, int]):
             initial_flood_cells: Starting flooded cells.
         """
         self.grid_size = 6
-        self.max_steps = max_steps
-        self.move_success_prob = move_success_prob
-        self.flood_spread_prob = flood_spread_prob
+        self.max_steps = int(max_steps)
+        self.move_success_prob = float(move_success_prob)
+        self.flood_spread_prob = float(flood_spread_prob)
         self.goal_position = goal_position
         self.initial_flood_cells = initial_flood_cells
 
+        self._validate_parameters()
         self._validate_static_positions()
 
         self.action_space = spaces.Discrete(4)
@@ -228,6 +229,15 @@ class FloodEscapeEnv(gym.Env[Observation, int]):
                 raise ValueError("initial_flood_cells contains out-of-bounds coordinates.")
             if (fx, fy) == self.goal_position:
                 raise ValueError("initial_flood_cells must not include the goal cell.")
+
+    def _validate_parameters(self) -> None:
+        """Validate core stochastic and episode-length parameters."""
+        if self.max_steps < 1:
+            raise ValueError("max_steps must be at least 1.")
+        if not 0.0 <= self.move_success_prob <= 1.0:
+            raise ValueError("move_success_prob must be in [0.0, 1.0].")
+        if not 0.0 <= self.flood_spread_prob <= 1.0:
+            raise ValueError("flood_spread_prob must be in [0.0, 1.0].")
 
     def _get_observation(self) -> Observation:
         """Build the current observation dictionary."""

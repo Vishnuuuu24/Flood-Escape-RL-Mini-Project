@@ -21,7 +21,7 @@ class DynaQAgent(BaseTabularAgent):
             raise ValueError("planning_steps must be non-negative.")
 
         self.planning_steps = int(planning_steps)
-        self.model: dict[tuple[StateKey, int], list[tuple[StateKey, float, bool]]] = {}
+        self.model: dict[tuple[StateKey, int], dict[tuple[StateKey, float, bool], int]] = {}
         self._model_keys: list[tuple[StateKey, int]] = []
 
     def update(
@@ -48,9 +48,12 @@ class DynaQAgent(BaseTabularAgent):
         *,
         terminated: bool,
     ) -> None:
-        if terminated:
+        terminal_next_state = bool(terminated or self.is_terminal_state(next_state))
+
+        if terminal_next_state:
             td_target = float(reward)
-            self.mark_terminal_state(next_state)
+            if not self.is_terminal_state(next_state):
+                self.mark_terminal_state(next_state)
         else:
             td_target = float(reward) + self.gamma * float(np.max(self.q_values(next_state)))
 
@@ -68,14 +71,28 @@ class DynaQAgent(BaseTabularAgent):
         model_key = (state, int(action))
         if model_key not in self.model:
             self._model_keys.append(model_key)
-            self.model[model_key] = []
+            self.model[model_key] = {}
 
-        self.model[model_key].append((next_state, float(reward), bool(terminated)))
+        outcome = (next_state, float(reward), bool(terminated))
+        self.model[model_key][outcome] = self.model[model_key].get(outcome, 0) + 1
 
     def _sample_model_transition(self, model_key: tuple[StateKey, int]) -> tuple[StateKey, float, bool]:
-        outcomes = self.model[model_key]
-        sampled_index = int(self.rng.integers(0, len(outcomes)))
-        return outcomes[sampled_index]
+        outcomes_dict = self.model[model_key]
+        outcomes = list(outcomes_dict.keys())
+        counts = np.array(list(outcomes_dict.values()), dtype=np.float64)
+        probs = counts / counts.sum()
+
+        sampled_index = int(self.rng.choice(len(outcomes), p=probs))
+        next_state, reward, terminated = outcomes[sampled_index]
+
+        if not terminated:
+            has_terminal_variant = any(
+                candidate_next_state == next_state and candidate_terminated
+                for candidate_next_state, _, candidate_terminated in outcomes
+            )
+            terminated = bool(has_terminal_variant)
+
+        return next_state, reward, bool(terminated)
 
     def _run_planning_updates(self) -> None:
         if self.planning_steps == 0 or not self._model_keys:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from env import FloodEscapeEnv
 
 
@@ -119,3 +121,24 @@ def test_two_flooded_neighbors_do_not_compound_target_spread_probability() -> No
     assert abs(single_neighbor_rate - spread_prob) < 0.07
     assert abs(double_neighbor_rate - spread_prob) < 0.07
     assert abs(double_neighbor_rate - single_neighbor_rate) < 0.08
+
+
+def test_default_flood_spread_probability_is_balanced_for_learning_signal() -> None:
+    env = FloodEscapeEnv()
+    assert env.flood_spread_prob == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected_message",
+    [
+        ({"max_steps": 0}, "max_steps must be at least 1."),
+        ({"move_success_prob": -0.1}, "move_success_prob must be in [0.0, 1.0]."),
+        ({"move_success_prob": 1.1}, "move_success_prob must be in [0.0, 1.0]."),
+        ({"flood_spread_prob": -0.1}, "flood_spread_prob must be in [0.0, 1.0]."),
+        ({"flood_spread_prob": 1.1}, "flood_spread_prob must be in [0.0, 1.0]."),
+    ],
+)
+def test_constructor_validates_core_parameters(kwargs: dict[str, float | int], expected_message: str) -> None:
+    with pytest.raises(ValueError) as error_info:
+        FloodEscapeEnv(**kwargs)
+    assert str(error_info.value) == expected_message
