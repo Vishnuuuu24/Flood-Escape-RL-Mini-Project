@@ -21,7 +21,7 @@ class DynaQAgent(BaseTabularAgent):
             raise ValueError("planning_steps must be non-negative.")
 
         self.planning_steps = int(planning_steps)
-        self.model: dict[tuple[StateKey, int], tuple[StateKey, float, bool]] = {}
+        self.model: dict[tuple[StateKey, int], list[tuple[StateKey, float, bool]]] = {}
         self._model_keys: list[tuple[StateKey, int]] = []
 
     def update(
@@ -30,11 +30,13 @@ class DynaQAgent(BaseTabularAgent):
         action: int,
         reward: float,
         next_state: StateKey,
-        done: bool,
+        *,
+        terminated: bool,
+        truncated: bool,
     ) -> None:
         """Update from real transition and then perform planning updates."""
-        self._apply_q_learning_backup(state, action, reward, next_state, done)
-        self._store_transition(state, action, reward, next_state, done)
+        self._apply_q_learning_backup(state, action, reward, next_state, terminated=terminated)
+        self._store_transition(state, action, reward, next_state, terminated=terminated)
         self._run_planning_updates()
 
     def _apply_q_learning_backup(
@@ -43,9 +45,10 @@ class DynaQAgent(BaseTabularAgent):
         action: int,
         reward: float,
         next_state: StateKey,
-        done: bool,
+        *,
+        terminated: bool,
     ) -> None:
-        if done:
+        if terminated:
             td_target = float(reward)
             self.mark_terminal_state(next_state)
         else:
@@ -59,12 +62,20 @@ class DynaQAgent(BaseTabularAgent):
         action: int,
         reward: float,
         next_state: StateKey,
-        done: bool,
+        *,
+        terminated: bool,
     ) -> None:
         model_key = (state, int(action))
         if model_key not in self.model:
             self._model_keys.append(model_key)
-        self.model[model_key] = (next_state, float(reward), bool(done))
+            self.model[model_key] = []
+
+        self.model[model_key].append((next_state, float(reward), bool(terminated)))
+
+    def _sample_model_transition(self, model_key: tuple[StateKey, int]) -> tuple[StateKey, float, bool]:
+        outcomes = self.model[model_key]
+        sampled_index = int(self.rng.integers(0, len(outcomes)))
+        return outcomes[sampled_index]
 
     def _run_planning_updates(self) -> None:
         if self.planning_steps == 0 or not self._model_keys:
@@ -73,5 +84,11 @@ class DynaQAgent(BaseTabularAgent):
         for _ in range(self.planning_steps):
             sampled_index = int(self.rng.integers(0, len(self._model_keys)))
             sampled_state, sampled_action = self._model_keys[sampled_index]
-            next_state, reward, done = self.model[(sampled_state, sampled_action)]
-            self._apply_q_learning_backup(sampled_state, sampled_action, reward, next_state, done)
+            next_state, reward, terminated = self._sample_model_transition((sampled_state, sampled_action))
+            self._apply_q_learning_backup(
+                sampled_state,
+                sampled_action,
+                reward,
+                next_state,
+                terminated=terminated,
+            )

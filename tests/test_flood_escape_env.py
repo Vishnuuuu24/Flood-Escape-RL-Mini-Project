@@ -71,3 +71,51 @@ def test_episode_terminates_on_goal_and_flood() -> None:
     _, _, terminated_flood, truncated_flood, _ = env.step(3)
     assert terminated_flood is True
     assert truncated_flood is False
+
+
+def test_flood_spread_probability_applies_once_per_target_cell() -> None:
+    spread_prob = 0.25
+    trials = 3000
+    env = FloodEscapeEnv(flood_spread_prob=spread_prob)
+
+    infected_count = 0
+    for seed in range(trials):
+        env.reset(seed=seed)
+        env.flood_map.fill(0)
+        env.flood_map[2, 2] = 1
+        env.flood_map[2, 4] = 1
+
+        # Cell (2, 3) has two flooded neighbors and must still get one draw.
+        env._spread_flood()
+        infected_count += int(env.flood_map[2, 3])
+
+    observed_rate = infected_count / trials
+    assert abs(observed_rate - spread_prob) < 0.06
+    assert observed_rate < 0.33
+
+
+def test_two_flooded_neighbors_do_not_compound_target_spread_probability() -> None:
+    spread_prob = 0.30
+    trials = 3000
+    env = FloodEscapeEnv(flood_spread_prob=spread_prob)
+
+    single_neighbor_hits = 0
+    double_neighbor_hits = 0
+    for seed in range(trials):
+        env.reset(seed=10000 + seed)
+        env.flood_map.fill(0)
+        env.flood_map[2, 2] = 1
+        env.flood_map[2, 4] = 1
+
+        env._spread_flood()
+
+        # (1, 2) has one flooded neighbor; (2, 3) has two flooded neighbors.
+        single_neighbor_hits += int(env.flood_map[1, 2])
+        double_neighbor_hits += int(env.flood_map[2, 3])
+
+    single_neighbor_rate = single_neighbor_hits / trials
+    double_neighbor_rate = double_neighbor_hits / trials
+
+    assert abs(single_neighbor_rate - spread_prob) < 0.07
+    assert abs(double_neighbor_rate - spread_prob) < 0.07
+    assert abs(double_neighbor_rate - single_neighbor_rate) < 0.08

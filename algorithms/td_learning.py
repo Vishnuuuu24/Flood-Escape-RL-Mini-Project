@@ -40,12 +40,20 @@ class TDPrediction:
         """Check whether a state is terminal."""
         return state in self.terminal_states
 
-    def update(self, state: StateKey, reward: float, next_state: StateKey, done: bool) -> None:
+    def update(
+        self,
+        state: StateKey,
+        reward: float,
+        next_state: StateKey,
+        *,
+        terminated: bool,
+        truncated: bool,
+    ) -> None:
         """Apply one TD(0) update: V(s) <- V(s) + alpha * (target - V(s))."""
         if self.is_terminal_state(state):
             return
 
-        if done:
+        if terminated:
             bootstrap = 0.0
             self.mark_terminal_state(next_state)
         else:

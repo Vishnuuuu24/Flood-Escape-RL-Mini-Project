@@ -36,7 +36,14 @@ def test_q_learning_uses_off_policy_max_backup() -> None:
     agent = QLearningAgent(n_actions=3, alpha=1.0, gamma=0.9)
     agent.q_table[next_state] = np.array([1.0, 10.0, 3.0], dtype=np.float64)
 
-    agent.update(state=state, action=0, reward=2.0, next_state=next_state, done=False)
+    agent.update(
+        state=state,
+        action=0,
+        reward=2.0,
+        next_state=next_state,
+        terminated=False,
+        truncated=False,
+    )
 
     expected = 2.0 + 0.9 * 10.0
     assert agent.q_values(state)[0] == pytest.approx(expected)
@@ -56,25 +63,64 @@ def test_sarsa_uses_on_policy_next_action_backup() -> None:
         reward=2.0,
         next_state=next_state,
         next_action=2,
-        done=False,
+        terminated=False,
+        truncated=False,
     )
 
     expected = 2.0 + 0.9 * 3.0
     assert agent.q_values(state)[0] == pytest.approx(expected)
 
 
-def test_observation_to_state_key_accepts_numpy_arrays_and_is_hashable() -> None:
+def test_observation_to_state_key_uses_compact_local_sensor_and_is_hashable() -> None:
     observation = {
-        "agent": np.array([2, 4], dtype=np.int32),
-        "flood": np.array([[0, 1, 0], [1, 1, 0], [0, 0, 0]], dtype=np.uint8),
+        "agent": np.array([2, 2], dtype=np.int32),
+        "flood": np.array(
+            [
+                [0, 0, 0, 0, 0, 0],
+                [0, 1, 0, 1, 0, 0],
+                [0, 0, 1, 0, 0, 0],
+                [0, 1, 1, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0],
+                [0, 0, 0, 0, 0, 0],
+            ],
+            dtype=np.uint8,
+        ),
     }
 
     key = observation_to_state_key(observation)
 
     hash(key)
+    assert key == ((2, 2), bytes([0xD5, 0x00]))
     assert isinstance(key, tuple)
     assert isinstance(key[0], tuple)
     assert isinstance(key[1], bytes)
+    assert len(key[1]) == 2
+
+
+def test_observation_to_state_key_ignores_flood_cells_outside_local_neighborhood() -> None:
+    flood_a = np.zeros((6, 6), dtype=np.uint8)
+    flood_b = np.zeros((6, 6), dtype=np.uint8)
+
+    flood_a[2, 2] = 1
+    flood_b[2, 2] = 1
+    flood_a[0, 0] = 1
+    flood_b[5, 5] = 1
+
+    key_a = observation_to_state_key({"agent": np.array([2, 2]), "flood": flood_a})
+    key_b = observation_to_state_key({"agent": np.array([2, 2]), "flood": flood_b})
+
+    assert key_a == key_b
+
+
+def test_observation_to_state_key_preserves_agent_position_in_state() -> None:
+    flood = np.zeros((6, 6), dtype=np.uint8)
+
+    key_a = observation_to_state_key({"agent": np.array([1, 1]), "flood": flood})
+    key_b = observation_to_state_key({"agent": np.array([1, 2]), "flood": flood})
+
+    assert key_a[0] == (1, 1)
+    assert key_b[0] == (1, 2)
+    assert key_a != key_b
 
 
 def test_epsilon_decay_converges_to_min_and_never_goes_below_floor() -> None:
@@ -98,7 +144,75 @@ def test_dyna_q_planning_accelerates_value_update() -> None:
     next_state = _state((0, 1), flood)
 
     agent = DynaQAgent(n_actions=4, alpha=0.5, gamma=0.0, planning_steps=10)
-    agent.update(state=state, action=0, reward=1.0, next_state=next_state, done=False)
+    agent.update(
+        state=state,
+        action=0,
+        reward=1.0,
+        next_state=next_state,
+        terminated=False,
+        truncated=False,
+    )
 
     # Real update alone would set Q to 0.5; planning should push it closer to 1.0.
     assert agent.q_values(state)[0] > 0.5
+
+
+def test_dyna_q_truncation_does_not_zero_bootstrap_target() -> None:
+    flood = np.zeros((2, 2), dtype=np.uint8)
+    state = _state((0, 0), flood)
+    next_state = _state((0, 1), flood)
+
+    agent = DynaQAgent(n_actions=3, alpha=1.0, gamma=0.5, planning_steps=0)
+    agent.q_table[next_state] = np.array([4.0, 1.0, 0.0], dtype=np.float64)
+
+    agent.update(
+        state=state,
+        action=1,
+        reward=2.0,
+        next_state=next_state,
+        terminated=False,
+        truncated=True,
+    )
+
+    expected = 2.0 + 0.5 * 4.0
+    assert agent.q_values(state)[1] == pytest.approx(expected)
+    assert not agent.is_terminal_state(next_state)
+
+
+def test_dyna_q_model_keeps_multiple_outcomes_and_samples_stochastically() -> None:
+    flood = np.zeros((2, 2), dtype=np.uint8)
+    state = _state((0, 0), flood)
+    next_state_a = _state((0, 1), flood)
+    next_state_b = _state((1, 0), flood)
+
+    agent = DynaQAgent(n_actions=2, alpha=1.0, gamma=0.0, planning_steps=0, seed=7)
+    agent.update(
+        state=state,
+        action=0,
+        reward=1.0,
+        next_state=next_state_a,
+        terminated=False,
+        truncated=False,
+    )
+    agent.update(
+        state=state,
+        action=0,
+        reward=3.0,
+        next_state=next_state_b,
+        terminated=False,
+        truncated=False,
+    )
+
+    model_key = (state, 0)
+    assert len(agent.model[model_key]) == 2
+
+    sampled_next_states: set[tuple[tuple[int, int], bytes]] = set()
+    sampled_rewards: set[float] = set()
+    for _ in range(200):
+        sampled_next_state, sampled_reward, sampled_terminated = agent._sample_model_transition(model_key)
+        sampled_next_states.add(sampled_next_state)
+        sampled_rewards.add(sampled_reward)
+        assert sampled_terminated is False
+
+    assert sampled_next_states == {next_state_a, next_state_b}
+    assert sampled_rewards == {1.0, 3.0}

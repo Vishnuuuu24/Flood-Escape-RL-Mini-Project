@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-from algorithms.base_agent import StateKey, observation_to_state_key
+from algorithms.base_agent import LOCAL_SENSOR_RADIUS, StateKey, observation_to_state_key
 from algorithms.dyna_q import DynaQAgent
 from algorithms.monte_carlo import MonteCarloControl
 from algorithms.q_learning import QLearningAgent
@@ -30,6 +30,11 @@ MetricValue = float | int
 Metrics = dict[str, list[MetricValue]]
 MetricsByAlgorithm = dict[str, Metrics]
 PolicyByPosition = dict[tuple[int, int], int]
+
+TABLE_ROW_WIDTH = {
+    "Q-table": 4,
+    "V-table": 1,
+}
 
 ACTION_LABELS = {
     0: "U",
@@ -68,7 +73,7 @@ def _td_behavior_action(
         return int(rng.integers(0, 4))
 
     x, y = state[0]
-    flood_bytes = state[1]
+    local_sensor_bytes = state[1]
 
     candidates = {
         0: (max(0, x - 1), y),
@@ -79,7 +84,7 @@ def _td_behavior_action(
 
     values = np.empty(4, dtype=np.float64)
     for action, next_pos in candidates.items():
-        next_state: StateKey = (next_pos, flood_bytes)
+        next_state: StateKey = (next_pos, local_sensor_bytes)
         values[action] = td_agent.value(next_state)
 
     max_value = float(np.max(values))
@@ -87,14 +92,19 @@ def _td_behavior_action(
     return int(best_actions[int(rng.integers(0, len(best_actions)))])
 
 
-def _run_monte_carlo(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, np.ndarray]]:
+def _run_monte_carlo(
+    episodes: int,
+    seed: int,
+) -> tuple[Metrics, dict[StateKey, np.ndarray], set[StateKey]]:
     env = FloodEscapeEnv()
     agent = MonteCarloControl(n_actions=env.action_space.n, seed=seed)
     metrics = _init_metrics()
+    visited_states: set[StateKey] = set()
 
     for episode in range(episodes):
         obs, _ = env.reset(seed=_episode_seed(seed, 0, episode))
         state = observation_to_state_key(obs)
+        visited_states.add(state)
         done = False
 
         episode_reward = 0.0
@@ -105,6 +115,7 @@ def _run_monte_carlo(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, 
             action = agent.select_action(state, explore=True)
             next_obs, reward, terminated, truncated, _ = env.step(action)
             next_state = observation_to_state_key(next_obs)
+            visited_states.add(next_state)
 
             agent.record_transition(state, action, reward)
 
@@ -118,17 +129,22 @@ def _run_monte_carlo(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, 
         metrics["success_per_episode"].append(_is_success(bool(terminated), state, env.goal_position))
         metrics["steps_per_episode"].append(episode_steps)
 
-    return metrics, agent.q_table
+    return metrics, agent.q_table, visited_states
 
 
-def _run_sarsa(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, np.ndarray]]:
+def _run_sarsa(
+    episodes: int,
+    seed: int,
+) -> tuple[Metrics, dict[StateKey, np.ndarray], set[StateKey]]:
     env = FloodEscapeEnv()
     agent = SARSAAgent(n_actions=env.action_space.n, seed=seed)
     metrics = _init_metrics()
+    visited_states: set[StateKey] = set()
 
     for episode in range(episodes):
         obs, _ = env.reset(seed=_episode_seed(seed, 1, episode))
         state = observation_to_state_key(obs)
+        visited_states.add(state)
         action = agent.select_action(state, explore=True)
 
         done = False
@@ -138,10 +154,19 @@ def _run_sarsa(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, np.nda
         while not done:
             next_obs, reward, terminated, truncated, _ = env.step(action)
             next_state = observation_to_state_key(next_obs)
+            visited_states.add(next_state)
 
             done = bool(terminated or truncated)
-            next_action = 0 if done else agent.select_action(next_state, explore=True)
-            agent.update(state, action, reward, next_state, next_action, done)
+            next_action = 0 if terminated else agent.select_action(next_state, explore=True)
+            agent.update(
+                state,
+                action,
+                reward,
+                next_state,
+                next_action,
+                terminated=bool(terminated),
+                truncated=bool(truncated),
+            )
 
             episode_reward += float(reward)
             episode_steps += 1
@@ -153,17 +178,21 @@ def _run_sarsa(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, np.nda
         metrics["success_per_episode"].append(_is_success(bool(terminated), state, env.goal_position))
         metrics["steps_per_episode"].append(episode_steps)
 
-    return metrics, agent.q_table
+    return metrics, agent.q_table, visited_states
 
-
-def _run_q_learning(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, np.ndarray]]:
+def _run_q_learning(
+    episodes: int,
+    seed: int,
+) -> tuple[Metrics, dict[StateKey, np.ndarray], set[StateKey]]:
     env = FloodEscapeEnv()
     agent = QLearningAgent(n_actions=env.action_space.n, seed=seed)
     metrics = _init_metrics()
+    visited_states: set[StateKey] = set()
 
     for episode in range(episodes):
         obs, _ = env.reset(seed=_episode_seed(seed, 2, episode))
         state = observation_to_state_key(obs)
+        visited_states.add(state)
 
         done = False
         episode_reward = 0.0
@@ -173,9 +202,17 @@ def _run_q_learning(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, n
             action = agent.select_action(state, explore=True)
             next_obs, reward, terminated, truncated, _ = env.step(action)
             next_state = observation_to_state_key(next_obs)
+            visited_states.add(next_state)
 
             done = bool(terminated or truncated)
-            agent.update(state, action, reward, next_state, done)
+            agent.update(
+                state,
+                action,
+                reward,
+                next_state,
+                terminated=bool(terminated),
+                truncated=bool(truncated),
+            )
 
             episode_reward += float(reward)
             episode_steps += 1
@@ -186,17 +223,22 @@ def _run_q_learning(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, n
         metrics["success_per_episode"].append(_is_success(bool(terminated), state, env.goal_position))
         metrics["steps_per_episode"].append(episode_steps)
 
-    return metrics, agent.q_table
+    return metrics, agent.q_table, visited_states
 
 
-def _run_dyna_q(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, np.ndarray]]:
+def _run_dyna_q(
+    episodes: int,
+    seed: int,
+) -> tuple[Metrics, dict[StateKey, np.ndarray], set[StateKey]]:
     env = FloodEscapeEnv()
     agent = DynaQAgent(n_actions=env.action_space.n, seed=seed, planning_steps=20)
     metrics = _init_metrics()
+    visited_states: set[StateKey] = set()
 
     for episode in range(episodes):
         obs, _ = env.reset(seed=_episode_seed(seed, 4, episode))
         state = observation_to_state_key(obs)
+        visited_states.add(state)
 
         done = False
         episode_reward = 0.0
@@ -206,9 +248,17 @@ def _run_dyna_q(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, np.nd
             action = agent.select_action(state, explore=True)
             next_obs, reward, terminated, truncated, _ = env.step(action)
             next_state = observation_to_state_key(next_obs)
+            visited_states.add(next_state)
 
             done = bool(terminated or truncated)
-            agent.update(state, action, reward, next_state, done)
+            agent.update(
+                state,
+                action,
+                reward,
+                next_state,
+                terminated=bool(terminated),
+                truncated=bool(truncated),
+            )
 
             episode_reward += float(reward)
             episode_steps += 1
@@ -219,18 +269,23 @@ def _run_dyna_q(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, np.nd
         metrics["success_per_episode"].append(_is_success(bool(terminated), state, env.goal_position))
         metrics["steps_per_episode"].append(episode_steps)
 
-    return metrics, agent.q_table
+    return metrics, agent.q_table, visited_states
 
 
-def _run_td_prediction(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey, float]]:
+def _run_td_prediction(
+    episodes: int,
+    seed: int,
+) -> tuple[Metrics, dict[StateKey, float], set[StateKey]]:
     env = FloodEscapeEnv()
     agent = TDPrediction()
     metrics = _init_metrics()
     rng = np.random.default_rng(seed)
+    visited_states: set[StateKey] = set()
 
     for episode in range(episodes):
         obs, _ = env.reset(seed=_episode_seed(seed, 3, episode))
         state = observation_to_state_key(obs)
+        visited_states.add(state)
 
         done = False
         episode_reward = 0.0
@@ -246,9 +301,16 @@ def _run_td_prediction(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey
             )
             next_obs, reward, terminated, truncated, _ = env.step(action)
             next_state = observation_to_state_key(next_obs)
+            visited_states.add(next_state)
 
             done = bool(terminated or truncated)
-            agent.update(state, reward, next_state, done)
+            agent.update(
+                state,
+                reward,
+                next_state,
+                terminated=bool(terminated),
+                truncated=bool(truncated),
+            )
 
             episode_reward += float(reward)
             episode_steps += 1
@@ -259,62 +321,175 @@ def _run_td_prediction(episodes: int, seed: int) -> tuple[Metrics, dict[StateKey
         metrics["success_per_episode"].append(_is_success(bool(terminated), state, env.goal_position))
         metrics["steps_per_episode"].append(episode_steps)
 
-    return metrics, agent.v_table
+    return metrics, agent.v_table, visited_states
 
 
-def _aggregate_q_by_position(
+def _compute_state_space_caps(
+    *,
+    grid_size: int,
+    local_sensor_radius: int,
+) -> dict[str, int]:
+    positions = grid_size * grid_size
+    full_flood_bits = grid_size * grid_size
+    local_sensor_width = (2 * local_sensor_radius) + 1
+    local_sensor_bits = local_sensor_width * local_sensor_width
+
+    return {
+        "positions": positions,
+        "full_flood_bits": full_flood_bits,
+        "local_sensor_width": local_sensor_width,
+        "local_sensor_bits": local_sensor_bits,
+        "old_cap": positions * (2**full_flood_bits),
+        "new_cap": positions * (2**local_sensor_bits),
+    }
+
+
+def _compute_sparsity_metrics(
+    *,
+    unique_states_visited: int,
+    table_rows: int,
+    old_cap: int,
+    new_cap: int,
+) -> dict[str, float | int]:
+    practical_occupancy_new = (table_rows / new_cap) if new_cap else 0.0
+    visited_coverage_new = (unique_states_visited / new_cap) if new_cap else 0.0
+    baseline_occupancy_old = (table_rows / old_cap) if old_cap else 0.0
+
+    return {
+        "unique_states_visited": unique_states_visited,
+        "table_rows": table_rows,
+        "practical_occupancy_new": practical_occupancy_new,
+        "visited_coverage_new": visited_coverage_new,
+        "baseline_occupancy_old": baseline_occupancy_old,
+    }
+
+
+def _format_sparsity_section(
+    *,
+    sparsity_by_algo: dict[str, dict[str, float | int | str]],
+    caps: dict[str, int],
+    scenario_label: str | None = None,
+) -> str:
+    reduction_factor = caps["old_cap"] / caps["new_cap"] if caps["new_cap"] else float("inf")
+
+    lines = [
+        "Phase 3 Convergence Sparsity and Coverage",
+        (
+            f"Scenario context: {scenario_label}"
+            if scenario_label
+            else "Scenario context: Scenario-conditioned (deterministic base fallback flood: none)"
+        ),
+        "State-space baseline comparison:",
+        f"- Old cap (full flood map, {caps['full_flood_bits']} bits): {caps['old_cap']}",
+        (
+            "- New cap (local sensor "
+            f"{caps['local_sensor_width']}x{caps['local_sensor_width']}, {caps['local_sensor_bits']} bits): "
+            f"{caps['new_cap']}"
+        ),
+        f"- Reduction factor (old/new): {reduction_factor:.3e}",
+        "Formulas:",
+        "- old_cap = |positions| * 2^(grid_size^2)",
+        "- new_cap = |positions| * 2^((2*sensor_radius+1)^2)",
+        "- Practical occupancy ratio (table/new cap): table_rows / new_cap",
+        "- Coverage ratio (visited/new cap): unique_states_visited / new_cap",
+        "- Old baseline occupancy (table/old cap): table_rows / old_cap",
+    ]
+
+    for algo_name, metrics in sparsity_by_algo.items():
+        table_kind = str(metrics["table_kind"])
+        table_rows = int(metrics["table_rows"])
+        table_width = TABLE_ROW_WIDTH[table_kind]
+        table_entries = table_rows * table_width
+
+        lines.extend(
+            [
+                "",
+                f"{algo_name} sparsity",
+                f"- Unique states visited: {int(metrics['unique_states_visited'])}",
+                f"- Table rows: {table_rows}",
+                f"- {table_kind} size (rows x values): {table_rows} x {table_width} = {table_entries}",
+                f"- Practical occupancy ratio (table/new cap): {float(metrics['practical_occupancy_new']):.6e}",
+                f"- Coverage ratio (visited/new cap): {float(metrics['visited_coverage_new']):.6e}",
+                f"- Old baseline occupancy (table/old cap): {float(metrics['baseline_occupancy_old']):.6e}",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def _scenario_state_key(position: tuple[int, int], scenario_flood_map: np.ndarray) -> StateKey:
+    """Build a state key query for one position under a fixed flood scenario."""
+    observation = {
+        "agent": np.asarray(position, dtype=np.int64),
+        "flood": scenario_flood_map,
+    }
+    return observation_to_state_key(observation)
+
+
+def _extract_q_by_position_for_scenario(
     q_table: dict[StateKey, np.ndarray],
     grid_size: int,
+    scenario_flood_map: np.ndarray,
 ) -> dict[tuple[int, int], np.ndarray]:
-    grouped: dict[tuple[int, int], list[np.ndarray]] = {}
+    extracted: dict[tuple[int, int], np.ndarray] = {}
 
-    for state, row in q_table.items():
-        x, y = state[0]
-        if not (0 <= x < grid_size and 0 <= y < grid_size):
-            continue
+    for x in range(grid_size):
+        for y in range(grid_size):
+            state_key = _scenario_state_key((x, y), scenario_flood_map)
+            q_values = q_table.get(state_key)
+            if q_values is None:
+                continue
 
-        q_values = np.asarray(row, dtype=np.float64).reshape(-1)
-        if q_values.size < 4 or not np.all(np.isfinite(q_values[:4])):
-            continue
+            q_array = np.asarray(q_values, dtype=np.float64).reshape(-1)
+            if q_array.size < 4 or not np.all(np.isfinite(q_array[:4])):
+                continue
 
-        grouped.setdefault((x, y), []).append(q_values[:4])
+            extracted[(x, y)] = q_array[:4]
 
-    return {
-        position: np.mean(np.vstack(rows), axis=0)
-        for position, rows in grouped.items()
-        if rows
-    }
+    return extracted
 
 
-def _aggregate_v_by_position(
+def _extract_v_by_position_for_scenario(
     v_table: dict[StateKey, float],
     grid_size: int,
+    scenario_flood_map: np.ndarray,
 ) -> dict[tuple[int, int], float]:
-    grouped: dict[tuple[int, int], list[float]] = {}
+    extracted: dict[tuple[int, int], float] = {}
 
-    for state, value in v_table.items():
-        x, y = state[0]
-        if not (0 <= x < grid_size and 0 <= y < grid_size):
-            continue
+    for x in range(grid_size):
+        for y in range(grid_size):
+            state_key = _scenario_state_key((x, y), scenario_flood_map)
+            value = v_table.get(state_key)
+            if value is None:
+                continue
 
-        numeric_value = float(value)
-        if not np.isfinite(numeric_value):
-            continue
+            numeric_value = float(value)
+            if np.isfinite(numeric_value):
+                extracted[(x, y)] = numeric_value
 
-        grouped.setdefault((x, y), []).append(numeric_value)
+    return extracted
 
-    return {
-        position: float(np.mean(values))
-        for position, values in grouped.items()
-        if values
-    }
+
+def _resolve_policy_scenario_flood_map(
+    scenario_flood_map: np.ndarray | None,
+    grid_size: int,
+) -> np.ndarray:
+    if scenario_flood_map is None:
+        return np.zeros((grid_size, grid_size), dtype=np.uint8)
+
+    resolved_map = np.asarray(scenario_flood_map, dtype=np.uint8)
+    if resolved_map.shape != (grid_size, grid_size):
+        raise ValueError("scenario_flood_map shape must match (grid_size, grid_size).")
+    return resolved_map
 
 
 def _derive_policy_from_q_table(
     q_table: dict[StateKey, np.ndarray],
     grid_size: int,
+    scenario_flood_map: np.ndarray | None = None,
 ) -> PolicyByPosition:
-    aggregated_q = _aggregate_q_by_position(q_table, grid_size)
+    resolved_scenario_map = _resolve_policy_scenario_flood_map(scenario_flood_map, grid_size)
+    aggregated_q = _extract_q_by_position_for_scenario(q_table, grid_size, resolved_scenario_map)
     policy: PolicyByPosition = {}
 
     for position, q_values in aggregated_q.items():
@@ -327,8 +502,10 @@ def _derive_policy_from_q_table(
 def _derive_policy_from_v_table(
     v_table: dict[StateKey, float],
     grid_size: int,
+    scenario_flood_map: np.ndarray | None = None,
 ) -> PolicyByPosition:
-    aggregated_v = _aggregate_v_by_position(v_table, grid_size)
+    resolved_scenario_map = _resolve_policy_scenario_flood_map(scenario_flood_map, grid_size)
+    aggregated_v = _extract_v_by_position_for_scenario(v_table, grid_size, resolved_scenario_map)
     policy: PolicyByPosition = {}
 
     for x in range(grid_size):
@@ -359,9 +536,13 @@ def _format_policy_grid(
     policy: PolicyByPosition,
     grid_size: int,
     goal_position: tuple[int, int],
+    scenario_label: str | None = None,
 ) -> str:
     header = "    " + " ".join(f"y{idx}" for idx in range(grid_size))
-    lines = [f"{algo_name} policy (greedy)", "Legend: U=Up D=Down L=Left R=Right G=Goal .=Unknown", header]
+    title = f"{algo_name} policy (greedy)"
+    if scenario_label:
+        title = f"{title} - {scenario_label}"
+    lines = [title, "Legend: U=Up D=Down L=Left R=Right G=Goal .=Unknown", header]
 
     for x in range(grid_size):
         row_tokens: list[str] = []
@@ -427,7 +608,9 @@ def run_all_experiments(
     output_dir: str | Path,
 ) -> tuple[MetricsByAlgorithm, list[Path]]:
     """Run all required training loops and save plot artifacts."""
-    trainers: list[tuple[str, Callable[[int, int], tuple[Metrics, dict[StateKey, Any]]]]] = [
+    trainers: list[
+        tuple[str, Callable[[int, int], tuple[Metrics, dict[StateKey, Any], set[StateKey]]]]
+    ] = [
         ("MonteCarloControl", _run_monte_carlo),
         ("TDPrediction", _run_td_prediction),
         ("SARSAAgent", _run_sarsa),
@@ -443,20 +626,56 @@ def run_all_experiments(
     output_path.mkdir(parents=True, exist_ok=True)
     grid_size = 6
     goal_position = (grid_size - 1, grid_size - 1)
+    sparsity_by_algo: dict[str, dict[str, float | int | str]] = {}
+
+    scenario_env = FloodEscapeEnv()
+    scenario_obs, _ = scenario_env.reset(seed=seed)
+    scenario_flood_map = np.asarray(scenario_obs["flood"], dtype=np.uint8)
+    grid_size = int(scenario_env.grid_size)
+    goal_position = tuple(scenario_env.goal_position)
+    caps = _compute_state_space_caps(
+        grid_size=grid_size,
+        local_sensor_radius=LOCAL_SENSOR_RADIUS,
+    )
+
+    flooded_cells = [(int(x), int(y)) for x, y in np.argwhere(scenario_flood_map == 1)]
+    flood_cells_text = ", ".join(f"({x},{y})" for x, y in flooded_cells) if flooded_cells else "none"
+    scenario_label = f"Scenario-conditioned (base reset flood: {flood_cells_text})"
 
     for algo_name, train_fn in trainers:
-        metrics, table = train_fn(episodes, seed)
+        metrics, table, visited_states = train_fn(episodes, seed)
         metrics_by_algo[algo_name] = metrics
 
+        table_kind = "V-table" if algo_name == "TDPrediction" else "Q-table"
+        sparsity_metrics = _compute_sparsity_metrics(
+            unique_states_visited=len(visited_states),
+            table_rows=len(table),
+            old_cap=int(caps["old_cap"]),
+            new_cap=int(caps["new_cap"]),
+        )
+        sparsity_by_algo[algo_name] = {
+            "table_kind": table_kind,
+            **sparsity_metrics,
+        }
+
         if algo_name == "TDPrediction":
-            derived_policy = _derive_policy_from_v_table(table, grid_size)
+            derived_policy = _derive_policy_from_v_table(
+                table,
+                grid_size,
+                scenario_flood_map=scenario_flood_map,
+            )
         else:
-            derived_policy = _derive_policy_from_q_table(table, grid_size)
+            derived_policy = _derive_policy_from_q_table(
+                table,
+                grid_size,
+                scenario_flood_map=scenario_flood_map,
+            )
         derived_policies[algo_name] = derived_policy
 
         policy_sections.append(
             _format_policy_grid(
                 algo_name=algo_name,
+                scenario_label=scenario_label,
                 policy=derived_policy,
                 grid_size=grid_size,
                 goal_position=goal_position,
@@ -475,18 +694,33 @@ def run_all_experiments(
                 output_path=policy_grid_file,
                 grid_size=grid_size,
                 goal_position=goal_position,
+                scenario_label=scenario_label,
             )
         )
 
         heatmap_file = output_path / f"value_heatmap_{algo_name.lower()}.png"
         generated_plots.append(
-            plot_value_heatmap(table, heatmap_file, grid_size=6, title=f"{algo_name} Value Heatmap")
+            plot_value_heatmap(
+                table,
+                heatmap_file,
+                grid_size=grid_size,
+                title=f"{algo_name} Value Heatmap",
+                scenario_flood_map=scenario_flood_map,
+                scenario_label=scenario_label,
+            )
         )
 
         if algo_name != "TDPrediction":
             policy_file = output_path / f"policy_{algo_name.lower()}.png"
             generated_plots.append(
-                plot_policy(table, policy_file, grid_size=6, title=f"{algo_name} Greedy Policy")
+                plot_policy(
+                    table,
+                    policy_file,
+                    grid_size=grid_size,
+                    title=f"{algo_name} Greedy Policy",
+                    scenario_flood_map=scenario_flood_map,
+                    scenario_label=scenario_label,
+                )
             )
 
     generated_plots.append(plot_learning_curves(metrics_by_algo, output_path, smooth_window))
@@ -511,6 +745,13 @@ def run_all_experiments(
     )
 
     policy_report_path = output_path.parent / "tables" / "policies_report.txt"
+    policy_sections.append(
+        _format_sparsity_section(
+            sparsity_by_algo=sparsity_by_algo,
+            caps=caps,
+            scenario_label=scenario_label,
+        )
+    )
     _write_policy_report(policy_sections, policy_report_path)
 
     return metrics_by_algo, generated_plots

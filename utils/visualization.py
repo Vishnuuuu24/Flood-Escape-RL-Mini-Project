@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TypeAlias
@@ -10,6 +9,7 @@ from typing import TypeAlias
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+from algorithms.base_agent import observation_to_state_key
 
 Numeric: TypeAlias = float | int
 AlgorithmMetrics: TypeAlias = Mapping[str, Sequence[Numeric]]
@@ -63,75 +63,78 @@ def _running_mean(values: Sequence[Numeric], window_size: int) -> np.ndarray:
     return smoothed
 
 
-def _extract_position(state: StateLike) -> tuple[int, int] | None:
-    """Extract (x, y) from a state key safely."""
-    try:
-        x, y = state[0]
-    except (TypeError, ValueError, IndexError):
-        return None
-    return int(x), int(y)
-
-
-def _aggregate_scalar_values(table: TableLike, grid_size: int) -> dict[tuple[int, int], float]:
-    """Aggregate values by (x, y) using mean across repeated states."""
-    grouped_values: dict[tuple[int, int], list[float]] = defaultdict(list)
-
-    for state, value in table.items():
-        position = _extract_position(state)
-        if position is None:
-            continue
-
-        x, y = position
-        if not (0 <= x < grid_size and 0 <= y < grid_size):
-            continue
-
-        if isinstance(value, np.ndarray):
-            q_values = np.asarray(value, dtype=np.float64).reshape(-1)
-            if q_values.size == 0 or not np.all(np.isfinite(q_values)):
-                continue
-            scalar = float(np.max(q_values))
-        else:
-            scalar = float(value)
-            if not np.isfinite(scalar):
-                continue
-
-        grouped_values[(x, y)].append(scalar)
-
-    return {
-        position: float(np.mean(values))
-        for position, values in grouped_values.items()
-        if len(values) > 0
+def _scenario_state_key(position: tuple[int, int], scenario_flood_map: np.ndarray) -> StateLike:
+    """Encode a plotting query state for one position under a fixed flood map."""
+    observation = {
+        "agent": np.asarray(position, dtype=np.int64),
+        "flood": scenario_flood_map,
     }
+    return observation_to_state_key(observation)
 
 
-def _aggregate_q_values(q_table: QTableLike, grid_size: int) -> dict[tuple[int, int], np.ndarray]:
-    """Aggregate Q-vectors by (x, y) using mean across repeated states."""
-    grouped: dict[tuple[int, int], list[np.ndarray]] = defaultdict(list)
+def _resolve_scenario_flood_map(
+    scenario_flood_map: np.ndarray | None,
+    grid_size: int,
+) -> np.ndarray:
+    if scenario_flood_map is None:
+        return np.zeros((grid_size, grid_size), dtype=np.uint8)
 
-    for state, q_values in q_table.items():
-        position = _extract_position(state)
-        if position is None:
-            continue
+    resolved_map = np.asarray(scenario_flood_map, dtype=np.uint8)
+    if resolved_map.shape != (grid_size, grid_size):
+        raise ValueError("scenario_flood_map shape must match (grid_size, grid_size).")
+    return resolved_map
 
-        x, y = position
-        if not (0 <= x < grid_size and 0 <= y < grid_size):
-            continue
 
-        q_array = np.asarray(q_values, dtype=np.float64).reshape(-1)
-        if q_array.size == 0 or not np.all(np.isfinite(q_array)):
-            continue
+def _extract_scenario_scalar_values(
+    table: TableLike,
+    grid_size: int,
+    scenario_flood_map: np.ndarray,
+) -> dict[tuple[int, int], float]:
+    """Extract scalar values for each grid position under one fixed flood scenario."""
+    extracted: dict[tuple[int, int], float] = {}
 
-        existing = grouped.get((x, y))
-        if existing and existing[0].shape[0] != q_array.shape[0]:
-            continue
+    for x in range(grid_size):
+        for y in range(grid_size):
+            state_key = _scenario_state_key((x, y), scenario_flood_map)
+            value = table.get(state_key)
+            if value is None:
+                continue
 
-        grouped[(x, y)].append(q_array)
+            if isinstance(value, np.ndarray):
+                q_values = np.asarray(value, dtype=np.float64).reshape(-1)
+                if q_values.size == 0 or not np.all(np.isfinite(q_values[:4])):
+                    continue
+                extracted[(x, y)] = float(np.max(q_values[:4]))
+            else:
+                scalar = float(value)
+                if np.isfinite(scalar):
+                    extracted[(x, y)] = scalar
 
-    aggregated: dict[tuple[int, int], np.ndarray] = {}
-    for position, q_rows in grouped.items():
-        if q_rows:
-            aggregated[position] = np.mean(np.vstack(q_rows), axis=0)
-    return aggregated
+    return extracted
+
+
+def _extract_scenario_q_values(
+    q_table: QTableLike,
+    grid_size: int,
+    scenario_flood_map: np.ndarray,
+) -> dict[tuple[int, int], np.ndarray]:
+    """Extract Q-vectors for each grid position under one fixed flood scenario."""
+    extracted: dict[tuple[int, int], np.ndarray] = {}
+
+    for x in range(grid_size):
+        for y in range(grid_size):
+            state_key = _scenario_state_key((x, y), scenario_flood_map)
+            q_values = q_table.get(state_key)
+            if q_values is None:
+                continue
+
+            q_array = np.asarray(q_values, dtype=np.float64).reshape(-1)
+            if q_array.size < 4 or not np.all(np.isfinite(q_array[:4])):
+                continue
+
+            extracted[(x, y)] = q_array
+
+    return extracted
 
 
 def plot_learning_curves(
@@ -323,13 +326,16 @@ def plot_value_heatmap(
     output_path: str | Path,
     grid_size: int = 6,
     title: str = "State Value Heatmap",
+    scenario_flood_map: np.ndarray | None = None,
+    scenario_label: str | None = None,
 ) -> Path:
-    """Plot a value heatmap from V-table or Q-table, aggregated on (x, y)."""
+    """Plot a value heatmap under one scenario, with deterministic base fallback when omitted."""
     if grid_size <= 0:
         raise ValueError("grid_size must be positive.")
 
     resolved_output_path = _ensure_parent_dir(output_path)
-    aggregated_values = _aggregate_scalar_values(table, grid_size)
+    resolved_scenario_map = _resolve_scenario_flood_map(scenario_flood_map, grid_size)
+    aggregated_values = _extract_scenario_scalar_values(table, grid_size, resolved_scenario_map)
 
     heatmap_data = np.full((grid_size, grid_size), np.nan, dtype=np.float64)
     for (x, y), value in aggregated_values.items():
@@ -353,7 +359,10 @@ def plot_value_heatmap(
         ax=ax,
     )
 
-    ax.set_title(title)
+    if scenario_label:
+        ax.set_title(f"{title}\n({scenario_label})")
+    else:
+        ax.set_title(title)
     ax.set_xlabel("y")
     ax.set_ylabel("x")
 
@@ -368,13 +377,16 @@ def plot_policy(
     output_path: str | Path,
     grid_size: int = 6,
     title: str = "Greedy Policy",
+    scenario_flood_map: np.ndarray | None = None,
+    scenario_label: str | None = None,
 ) -> Path:
-    """Plot greedy action arrows from argmax Q-values, aggregated on (x, y)."""
+    """Plot greedy action arrows for one scenario, with deterministic base fallback when omitted."""
     if grid_size <= 0:
         raise ValueError("grid_size must be positive.")
 
     resolved_output_path = _ensure_parent_dir(output_path)
-    aggregated_q = _aggregate_q_values(q_table, grid_size)
+    resolved_scenario_map = _resolve_scenario_flood_map(scenario_flood_map, grid_size)
+    aggregated_q = _extract_scenario_q_values(q_table, grid_size, resolved_scenario_map)
 
     row_indices, col_indices = np.meshgrid(np.arange(grid_size), np.arange(grid_size), indexing="ij")
     u = np.zeros((grid_size, grid_size), dtype=np.float64)
@@ -412,7 +424,10 @@ def plot_policy(
         width=0.006,
     )
 
-    ax.set_title(title)
+    if scenario_label:
+        ax.set_title(f"{title}\n({scenario_label})")
+    else:
+        ax.set_title(title)
     ax.set_xlim(-0.5, grid_size - 0.5)
     ax.set_ylim(-0.5, grid_size - 0.5)
     ax.set_xticks(np.arange(grid_size))
@@ -435,6 +450,7 @@ def plot_policy_grid_image(
     output_path: str | Path,
     grid_size: int = 6,
     goal_position: tuple[int, int] = (5, 5),
+    scenario_label: str | None = None,
 ) -> Path:
     """Render a terminal-style policy grid as a clean image artifact."""
     if grid_size <= 0:
@@ -477,8 +493,12 @@ def plot_policy_grid_image(
             else:
                 cell.set_facecolor("#e8f4fd")
 
+    title = f"{algo_name} Policy Grid"
+    if scenario_label:
+        title = f"{title}\n({scenario_label})"
+
     ax.set_title(
-        f"{algo_name} Policy Grid\nLegend: U=Up, D=Down, L=Left, R=Right, G=Goal, .=Unknown",
+        f"{title}\nLegend: U=Up, D=Down, L=Left, R=Right, G=Goal, .=Unknown",
         fontsize=11,
         pad=16,
     )

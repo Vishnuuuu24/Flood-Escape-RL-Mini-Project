@@ -177,20 +177,28 @@ class FloodEscapeEnv(gym.Env[Observation, int]):
         return any(self.flood_map[nx, ny] == 1 for nx, ny in self._get_valid_neighbors(position))
 
     def _spread_flood(self) -> None:
-        """Spread flood to orthogonally adjacent cells with per-cell spread probability.
+        """Spread flood to eligible target cells with one probability draw per cell.
 
         The goal cell is always protected and must never become flooded.
         """
-        current_flood_cells = np.argwhere(self.flood_map == 1)
-        updated_flood = self.flood_map.copy()
+        current_flood = self.flood_map.copy()
+        updated_flood = current_flood.copy()
         goal_x, goal_y = self.goal_position
 
-        for fx, fy in current_flood_cells:
+        candidate_targets: set[Position] = set()
+        for fx, fy in np.argwhere(current_flood == 1):
             for nx, ny in self._get_valid_neighbors((int(fx), int(fy))):
-                if (nx, ny) == self.goal_position or updated_flood[nx, ny] == 1:
+                if (nx, ny) == self.goal_position or current_flood[nx, ny] == 1:
                     continue
-                if self.np_random.random() < self.flood_spread_prob:
-                    updated_flood[nx, ny] = 1
+                candidate_targets.add((nx, ny))
+
+        # Evaluate each target once using the previous-step flood snapshot.
+        for tx, ty in sorted(candidate_targets):
+            has_flooded_neighbor = any(
+                current_flood[nx, ny] == 1 for nx, ny in self._get_valid_neighbors((tx, ty))
+            )
+            if has_flooded_neighbor and self.np_random.random() < self.flood_spread_prob:
+                updated_flood[tx, ty] = 1
 
         updated_flood[goal_x, goal_y] = 0
         self.flood_map = updated_flood

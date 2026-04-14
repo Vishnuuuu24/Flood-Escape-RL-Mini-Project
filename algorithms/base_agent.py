@@ -9,6 +9,7 @@ import numpy as np
 
 StateKey: TypeAlias = tuple[tuple[int, int], bytes]
 ObservationLike: TypeAlias = Mapping[str, Any]
+LOCAL_SENSOR_RADIUS = 1
 
 
 def observation_to_state_key(observation: ObservationLike) -> StateKey:
@@ -26,8 +27,22 @@ def observation_to_state_key(observation: ObservationLike) -> StateKey:
 
     agent_position = (int(agent_array[0]), int(agent_array[1]))
     flood_array = np.asarray(observation["flood"], dtype=np.uint8)
-    flood_bytes = np.ascontiguousarray(flood_array).tobytes()
-    return agent_position, flood_bytes
+    if flood_array.ndim != 2:
+        raise ValueError("Observation['flood'] must be a 2D grid.")
+
+    x, y = agent_position
+    height, width = flood_array.shape
+    if not (0 <= x < height and 0 <= y < width):
+        raise ValueError("Observation['agent'] must be inside the flood grid bounds.")
+
+    # Use a local 3x3 flood neighborhood centered at the agent to reduce state-space.
+    pad = LOCAL_SENSOR_RADIUS
+    padded_flood = np.pad(flood_array, pad_width=pad, mode="constant", constant_values=0)
+    local_patch = padded_flood[x : x + (2 * pad + 1), y : y + (2 * pad + 1)]
+    local_bits = np.ascontiguousarray(local_patch, dtype=np.uint8).reshape(-1)
+    local_sensor = np.packbits(local_bits, bitorder="little").tobytes()
+
+    return agent_position, local_sensor
 
 
 class BaseTabularAgent:
@@ -131,3 +146,22 @@ class BaseTabularAgent:
     def decay_hyperparameters(self) -> tuple[float, float]:
         """Decay alpha and epsilon together, returning updated values."""
         return self.decay_alpha(), self.decay_epsilon()
+
+    def update(
+        self,
+        state: StateKey,
+        action: int,
+        reward: float,
+        next_state: StateKey,
+        *,
+        terminated: bool,
+        truncated: bool,
+    ) -> None:
+        """Update value estimates from one transition.
+
+        Implementations should treat only ``terminated=True`` as a true terminal
+        transition for bootstrapping targets. ``truncated`` indicates a
+        time-limit style episode cutoff and should not force a zero bootstrap
+        target by itself.
+        """
+        raise NotImplementedError("Subclasses must implement update().")

@@ -16,10 +16,12 @@ class QLearningAgent(BaseTabularAgent):
         action: int,
         reward: float,
         next_state: StateKey,
-        done: bool,
+        *,
+        terminated: bool,
+        truncated: bool,
     ) -> None:
         """Perform Q-learning update using max_a Q(s', a)."""
-        if done:
+        if terminated:
             td_target = float(reward)
             self.mark_terminal_state(next_state)
         else:

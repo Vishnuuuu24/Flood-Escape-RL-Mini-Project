@@ -15,10 +15,12 @@ class SARSAAgent(BaseTabularAgent):
         reward: float,
         next_state: StateKey,
         next_action: int,
-        done: bool,
+        *,
+        terminated: bool,
+        truncated: bool,
     ) -> None:
         """Perform SARSA update using the actual action selected in next state."""
-        if done:
+        if terminated:
             td_target = float(reward)
             self.mark_terminal_state(next_state)
         else:

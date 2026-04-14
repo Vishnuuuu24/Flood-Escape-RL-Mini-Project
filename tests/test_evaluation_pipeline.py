@@ -81,3 +81,42 @@ def test_run_all_experiments_micro_training_artifacts_and_metrics(tmp_path: Path
     report_text = policy_report.read_text(encoding="utf-8")
     for algo_name in expected_algorithms:
         assert algo_name in report_text
+    assert "Scenario-conditioned (base reset flood:" in report_text
+    assert report_text.count("Scenario-conditioned (base reset flood:") >= len(expected_algorithms)
+
+
+def test_policy_report_includes_phase3_sparsity_and_coverage_metrics(tmp_path: Path) -> None:
+    output_dir = tmp_path / "plots"
+
+    run_all_experiments(
+        episodes=4,
+        seed=7,
+        smooth_window=2,
+        output_dir=output_dir,
+    )
+
+    policy_report = output_dir.parent / "tables" / "policies_report.txt"
+    report_text = policy_report.read_text(encoding="utf-8")
+
+    grid_size = 6
+    local_sensor_bits = 9
+    old_cap = (grid_size**2) * (2 ** (grid_size**2))
+    new_cap = (grid_size**2) * (2**local_sensor_bits)
+
+    assert "Phase 3 Convergence Sparsity and Coverage" in report_text
+    assert "Old cap (full flood map, 36 bits):" in report_text
+    assert str(old_cap) in report_text
+    assert "New cap (local sensor 3x3, 9 bits):" in report_text
+    assert str(new_cap) in report_text
+    assert "Practical occupancy ratio (table/new cap):" in report_text
+    assert "Unique states visited:" in report_text
+    assert "Table rows:" in report_text
+
+    for algo_name in (
+        "MonteCarloControl",
+        "TDPrediction",
+        "SARSAAgent",
+        "QLearningAgent",
+        "DynaQAgent",
+    ):
+        assert f"{algo_name} sparsity" in report_text
