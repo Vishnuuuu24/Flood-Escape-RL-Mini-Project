@@ -1,4 +1,5 @@
 # Flood Escape Project dependencies (strictly pinned).
+# Python 3.13.5 required
 # Setup:
 #   python3 -m venv .venv-flood-escape
 #   source .venv-flood-escape/bin/activate
