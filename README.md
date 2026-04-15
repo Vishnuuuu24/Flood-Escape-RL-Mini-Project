@@ -2,6 +2,8 @@
 
 Phase 1 baseline scaffold for a 6x6 Flood Escape reinforcement learning project.
 
+> 📖 **Educational Guide:** A complete theoretical and code-level breakdown of the environment, the 5 algorithms, and the engineering challenges solved in this project is available in [PROJECT_EXPLANATION.md](PROJECT_EXPLANATION.md).
+
 ## Project Scope
 
 This repository initializes the collaboration baseline for:
